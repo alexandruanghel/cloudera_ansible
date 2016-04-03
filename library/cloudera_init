@@ -36,7 +36,7 @@ options:
     description:
       - Name to be given to the cluster
     default: null
-  version:
+  fullVersion:
     description:
       - Full version of the cluster
     default: 5.6.0
@@ -51,7 +51,7 @@ options:
   hosts:
     description:
       - Comma separated hostnames of the nodes forming the cluster
-    default: nukk
+    default: null
   state:
     description:
       - Indicate desired state of the resource
@@ -72,7 +72,7 @@ EXAMPLES = '''
       local_action:
         module: cloudera_init
         name: my-test-cluster
-        version: 5.6.0
+        fullVersion: 5.6.0
         admin_password: admin
         cm_host: localhost
         hosts: localhost
@@ -92,26 +92,26 @@ def find_cluster(module, api, name):
     except ApiException as e:
         if e.code == 404:
             return None
-        module.fail_json(msg='Failed to get cluster.\nError is %s' % e)
+        module.fail_json(msg='Failed to get cluster.\nError is: %s' % e)
 
     return cluster
 
 
-def init_cluster(module, api, name, version, hosts, cm_host):
+def init_cluster(module, api, name, fullVersion, hosts, cm_host):
 
     changed = False
     cluster = find_cluster(module, api, name)
 
     if not cluster:
         try:
-            cluster = api.create_cluster(name, fullVersion=version)
+            cluster = api.create_cluster(name, fullVersion=fullVersion)
             all_hosts = set(hosts.split(','))
             all_hosts.add(cm_host)
             cluster.add_hosts(all_hosts)
             changed = True
             time.sleep(5)
         except ApiException as e:
-            module.fail_json(msg='Failed to build cluster.\nError is %s' % e)
+            module.fail_json(msg='Failed to build cluster.\nError is: %s' % e)
 
     result = dict(changed=changed, cluster=cluster.name)
     module.exit_json(**result)
@@ -127,7 +127,7 @@ def delete_cluster(module, api, name):
             changed = True
             time.sleep(5)
         except ApiException as e:
-            module.fail_json(msg='Failed to delete cluster.\nError is %s' % e)
+            module.fail_json(msg='Failed to delete cluster.\nError is: %s' % e)
     else:
         module.fail_json(msg='Cluster does not exist.')
 
@@ -138,11 +138,12 @@ def delete_cluster(module, api, name):
 def main():
     argument_spec = dict(
         name=dict(type='str'),
-        version=dict(type='str', default='5.6.0'),
+        fullVersion=dict(type='str', default='5.6.0'),
         admin_password=dict(type='str', default='admin'),
         state=dict(default='present', choices=['present', 'absent']),
         cm_host=dict(type='str', default='localhost'),
         hosts=dict(type='str', default=''),
+        trial=dict(type='bool', default=False),
         wait=dict(type='bool', default=False),
         wait_timeout=dict(default=30),
     )
@@ -152,11 +153,12 @@ def main():
     )
 
     name = module.params.get('name')
-    version = module.params.get('version')
+    fullVersion = module.params.get('fullVersion')
     admin_password = module.params.get('admin_password')
     state = module.params.get('state')
     cm_host = module.params.get('cm_host')
     hosts = module.params.get('hosts')
+    trial = module.params.get('trial')
     wait = module.params.get('wait')
     wait_timeout = int(module.params.get('wait_timeout'))
 
@@ -166,15 +168,17 @@ def main():
     cfg = ConfigParser.SafeConfigParser()
 
     try:
-        API = ApiResource(cm_host, version=version[0], username="admin", password=admin_password)
-        # MANAGER = API.get_cloudera_manager()
+        API = ApiResource(cm_host, version=fullVersion[0], username="admin", password=admin_password)
+        MANAGER = API.get_cloudera_manager()
+        if trial:
+            MANAGER.begin_trial()
     except ApiException as e:
-        module.fail_json(msg='Failed to connect to Cloudera Manager.\nError is %s' % e)
+        module.fail_json(msg='Failed to connect to Cloudera Manager.\nError is: %s' % e)
 
     if state == "absent":
         delete_cluster(module, API, name)
     else:
-        init_cluster(module, API, name, version, hosts, cm_host)
+        init_cluster(module, API, name, fullVersion, hosts, cm_host)
 
 
 # import module snippets
