@@ -1,0 +1,201 @@
+#!/usr/bin/python
+# This file is part of Ansible
+#
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+# This is a DOCUMENTATION stub specific to this module, it extends
+# a documentation fragment located in ansible.utils.module_docs_fragments
+import socket, sys, time, ConfigParser, csv, pprint, urllib2
+from subprocess import Popen, PIPE, STDOUT
+from math import log as ln
+from cm_api.api_client import ApiResource
+from cm_api.api_client import ApiException
+from cm_api.endpoints.services import ApiService
+from cm_api.endpoints.services import ApiServiceSetupInfo
+
+DOCUMENTATION = '''
+---
+module: cloudera_hosts
+short_description: add / remove hosts to / from a Cloudera cluster
+description:
+     - Manage hosts association with a Cloudera cluster.
+version_added: "2.1"
+options:
+  hosts:
+    description:
+      - Comma separated hostnames of the nodes to be added to the cluster
+    default: null
+  cluster:
+    description:
+      - Name of the cluster
+    default: null
+  cm_host:
+    description:
+      - Hostname of the node running Cloudera Manager
+    default: localhost
+  admin_password:
+    description:
+      - Password of the admin account for the cluster
+    default: admin
+  state:
+    description:
+      - Indicate desired state of the resource
+    choices:
+      - present
+      - absent
+    default: present
+author: Alexandru Anghel
+'''
+
+EXAMPLES = '''
+- name: Add hosts to the Cloudera cluster
+  gather_facts: False
+  hosts: local
+  connection: local
+  tasks:
+    - name: Add hosts API request
+      local_action:
+        module: cloudera_hosts
+        hosts: localhost
+        cluster: my-test-cluster
+        cm_host: localhost
+        admin_password: admin
+        state: present
+      register: my_hosts
+
+    - debug: var=my_hosts
+'''
+
+
+def find_cluster(module, api, name):
+    try:
+        cluster = api.get_cluster(name)
+        if not cluster:
+            return None
+
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get cluster.\nError is: %s' % e)
+
+    return cluster
+
+
+def find_host(module, api, name):
+    try:
+        host = api.get_host(name)
+        if not host:
+            return None
+
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get host.\nError is: %s' % e)
+
+    return host
+
+
+def add_hosts(module, api, cluster, hosts):
+    changed = False
+    added_hosts = []
+
+    try:
+        existing_hosts = [x.hostId for x in cluster.list_hosts()]
+    except ApiException as e:
+        module.fail_json(msg='Failed to get existing hosts.\nError is: %s' % e)
+
+    for hostname in set(hosts.split(',')):
+        host = find_host(module, api, hostname)
+        if host and host.hostId not in existing_hosts:
+            try:
+                cluster.add_hosts([host.hostId])
+                added_hosts.append(host.hostname)
+                changed = True
+                time.sleep(1)
+            except ApiException as e:
+                module.fail_json(msg='Failed to add the host.\nError is: %s' % e)
+
+    result = dict(changed=changed, cluster=cluster.name, hosts=added_hosts)
+    module.exit_json(**result)
+
+
+def remove_hosts(module, api, cluster, hosts):
+    changed = False
+    removed_hosts = []
+
+    try:
+        existing_hosts = [x.hostId for x in cluster.list_hosts()]
+    except ApiException as e:
+        module.fail_json(msg='Failed to get existing hosts.\nError is: %s' % e)
+
+    for hostname in set(hosts.split(',')):
+        host = find_host(module, api, hostname)
+        print host.hostId
+        if host and host.hostId in existing_hosts:
+            try:
+                cluster.remove_host(host.hostId)
+                removed_hosts.append(host.hostname)
+                changed = True
+                time.sleep(1)
+            except ApiException as e:
+                module.fail_json(msg='Failed to remove the host.\nError is: %s' % e)
+
+    result = dict(changed=changed, cluster=cluster.name, hosts=removed_hosts)
+    module.exit_json(**result)
+
+
+def main():
+    argument_spec = dict(
+        hosts=dict(type='str'),
+        cluster=dict(type='str'),
+        cm_host=dict(type='str', default='localhost'),
+        admin_password=dict(type='str', default='admin'),
+        state=dict(default='present', choices=['present', 'absent'])
+    )
+
+    module = AnsibleModule(
+        argument_spec=argument_spec
+    )
+
+    hosts = module.params.get('hosts')
+    cluster_name = module.params.get('cluster')
+    cm_host = module.params.get('cm_host')
+    admin_password = module.params.get('admin_password')
+    state = module.params.get('state')
+
+    if not hosts or not cluster_name:
+        module.fail_json(msg='The cluster and host names are required for this module')
+
+    cfg = ConfigParser.SafeConfigParser()
+
+    try:
+        API = ApiResource(cm_host, username="admin", password=admin_password)
+    except ApiException as e:
+        module.fail_json(msg='Failed to connect to Cloudera Manager.\nError is: %s' % e)
+
+    cluster = find_cluster(module, API, cluster_name)
+    if not cluster:
+        module.fail_json(msg='Cluster %s does not exist.' % cluster_name)
+
+    if state == "absent":
+        remove_hosts(module, API, cluster, hosts)
+    else:
+        add_hosts(module, API, cluster, hosts)
+
+
+# import module snippets
+from ansible.module_utils.basic import *
+
+### invoke the module
+main()

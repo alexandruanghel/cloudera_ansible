@@ -8,11 +8,22 @@
       local_action:
         module: cloudera_init
         name: hadoop_poc
-        version: 5.6.0
-        admin_password: admin
+        fullVersion: 5.6.0
         cm_host: localhost
-        hosts: localhost
+        admin_password: admin
         state: present
       register: my_cluster
 
     - debug: var=my_cluster
+
+    - name: Add hosts API request
+      local_action:
+        module: cloudera_hosts
+        hosts: master-01.localnet,slave-01.localnet
+        cluster: hadoop_poc
+        cm_host: localhost
+        admin_password: admin
+        state: present
+      register: my_hosts
+
+    - debug: var=my_hosts
