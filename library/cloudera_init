@@ -40,18 +40,14 @@ options:
     description:
       - Full version of the cluster
     default: 5.6.0
-  admin_password:
-    description:
-      - Password of the admin account for the cluster
-    default: admin
   cm_host:
     description:
       - Hostname of the node running Cloudera Manager
     default: localhost
-  hosts:
+  admin_password:
     description:
-      - Comma separated hostnames of the nodes forming the cluster
-    default: null
+      - Password of the admin account for the cluster
+    default: admin
   state:
     description:
       - Indicate desired state of the resource
@@ -73,9 +69,8 @@ EXAMPLES = '''
         module: cloudera_init
         name: my-test-cluster
         fullVersion: 5.6.0
-        admin_password: admin
         cm_host: localhost
-        hosts: localhost
+        admin_password: admin
         state: present
       register: my_cbd
 
@@ -97,7 +92,7 @@ def find_cluster(module, api, name):
     return cluster
 
 
-def init_cluster(module, api, name, fullVersion, hosts, cm_host):
+def init_cluster(module, api, name, fullVersion):
 
     changed = False
     cluster = find_cluster(module, api, name)
@@ -105,9 +100,6 @@ def init_cluster(module, api, name, fullVersion, hosts, cm_host):
     if not cluster:
         try:
             cluster = api.create_cluster(name, fullVersion=fullVersion)
-            all_hosts = set(hosts.split(','))
-            all_hosts.add(cm_host)
-            cluster.add_hosts(all_hosts)
             changed = True
             time.sleep(5)
         except ApiException as e:
@@ -139,10 +131,9 @@ def main():
     argument_spec = dict(
         name=dict(type='str'),
         fullVersion=dict(type='str', default='5.6.0'),
+        cm_host=dict(type='str', default='localhost'),
         admin_password=dict(type='str', default='admin'),
         state=dict(default='present', choices=['present', 'absent']),
-        cm_host=dict(type='str', default='localhost'),
-        hosts=dict(type='str', default=''),
         trial=dict(type='bool', default=False),
         wait=dict(type='bool', default=False),
         wait_timeout=dict(default=30),
@@ -154,10 +145,9 @@ def main():
 
     name = module.params.get('name')
     fullVersion = module.params.get('fullVersion')
+    cm_host = module.params.get('cm_host')
     admin_password = module.params.get('admin_password')
     state = module.params.get('state')
-    cm_host = module.params.get('cm_host')
-    hosts = module.params.get('hosts')
     trial = module.params.get('trial')
     wait = module.params.get('wait')
     wait_timeout = int(module.params.get('wait_timeout'))
@@ -178,7 +168,7 @@ def main():
     if state == "absent":
         delete_cluster(module, API, name)
     else:
-        init_cluster(module, API, name, fullVersion, hosts, cm_host)
+        init_cluster(module, API, name, fullVersion)
 
 
 # import module snippets
