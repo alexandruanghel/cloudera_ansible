@@ -120,10 +120,8 @@ def delete_cluster(module, api, name):
             time.sleep(5)
         except ApiException as e:
             module.fail_json(msg='Failed to delete cluster.\nError is: %s' % e)
-    else:
-        module.fail_json(msg='Cluster does not exist.')
 
-    result = dict(changed=changed, cluster=cluster.name)
+    result = dict(changed=changed, cluster=name)
     module.exit_json(**result)
 
 
