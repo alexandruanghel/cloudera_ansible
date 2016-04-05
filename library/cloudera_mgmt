@@ -1,0 +1,190 @@
+#!/usr/bin/python
+# This file is part of Ansible
+#
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+# This is a DOCUMENTATION stub specific to this module, it extends
+# a documentation fragment located in ansible.utils.module_docs_fragments
+import socket, sys, time, ConfigParser, csv, pprint, urllib2
+from subprocess import Popen, PIPE, STDOUT
+from math import log as ln
+from cm_api.api_client import ApiResource
+from cm_api.api_client import ApiException
+from cm_api.endpoints.services import ApiService
+from cm_api.endpoints.services import ApiServiceSetupInfo
+
+DOCUMENTATION = '''
+---
+module: cloudera_mgmt
+short_description: add / remove Cloudera Management Services
+description:
+     - Manage Cloudera Management Services.
+version_added: "2.1"
+options:
+  cm_host:
+    description:
+      - Hostname of the node running Cloudera Manager
+    default: localhost
+  admin_password:
+    description:
+      - Password of the admin account for the cluster
+    default: admin
+  database_password:
+    description:
+      - Password of the databases used by Cloudera Management Services
+    default: temp
+  state:
+    description:
+      - Indicate desired state of the resource
+    choices:
+      - present
+      - absent
+    default: present
+author: Alexandru Anghel
+'''
+
+EXAMPLES = '''
+- name: Add the Management Services to the Cloudera cluster
+  gather_facts: False
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Add Management Services API request
+      local_action:
+        module: cloudera_mgmt
+        cm_host: localhost
+        admin_password: admin
+        database_password: changeme
+        state: present
+      register: my_mgmt
+
+    - debug: var=my_mgmt
+'''
+
+
+def find_cluster(module, api, name):
+    try:
+        cluster = api.get_cluster(name)
+        if not cluster:
+            return None
+
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get the cluster.\nError is: %s' % e)
+
+    return cluster
+
+
+def find_service(module, manager):
+    try:
+        service = manager.get_service()
+        if not service:
+            return None
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get the service.\nError is %s' % e)
+
+    return service
+
+
+def add_service(module, manager, cm_host, database_password):
+    changed = False
+
+    activitymonitor_config = {
+        'firehose_database_password': database_password
+    }
+
+    service = find_service(module, manager)
+    if not service:
+        try:
+            service = manager.create_mgmt_service(ApiServiceSetupInfo())
+
+            hash = hashlib.md5(cm_host).hexdigest()
+
+            service.create_role("ALERTPUBLISHER-" + hash, "ALERTPUBLISHER", cm_host)
+            service.create_role("EVENTSERVER-" + hash, "EVENTSERVER", cm_host)
+            service.create_role("HOSTMONITOR-" + hash, "HOSTMONITOR", cm_host)
+            service.create_role("SERVICEMONITOR-" + hash, "SERVICEMONITOR", cm_host)
+
+            for config_group in service.get_all_role_config_groups():
+                if config_group.roleType == "ACTIVITYMONITOR":
+                    config_group.update_config(activitymonitor_config)
+
+            time.sleep(1)
+            service.start().wait()
+
+            changed = True
+        except ApiException as e:
+            module.fail_json(msg='Failed to add the Management Services.\nError is: %s' % e)
+
+    result = dict(changed=changed, service=service.name)
+    module.exit_json(**result)
+
+
+def remove_service(module, manager):
+    changed = False
+
+    service = find_service(module, manager)
+    if service:
+        try:
+            service.stop().wait()
+            manager.delete_mgmt_service()
+
+            time.sleep(1)
+            changed = True
+        except ApiException as e:
+            module.fail_json(msg='Failed to remove the Management Services.\nError is: %s' % e)
+
+    result = dict(changed=changed)
+    module.exit_json(**result)
+
+
+def main():
+    argument_spec = dict(
+        cm_host=dict(type='str', default='localhost'),
+        admin_password=dict(type='str', default='admin'),
+        database_password=dict(type='str', default='temp'),
+        state=dict(default='present', choices=['present', 'absent'])
+    )
+
+    module = AnsibleModule(
+        argument_spec=argument_spec
+    )
+
+    cm_host = module.params.get('cm_host')
+    admin_password = module.params.get('admin_password')
+    database_password = module.params.get('database_password')
+    state = module.params.get('state')
+
+    cfg = ConfigParser.SafeConfigParser()
+
+    try:
+        API = ApiResource(cm_host, username="admin", password=admin_password)
+        MANAGER = API.get_cloudera_manager()
+    except ApiException as e:
+        module.fail_json(msg='Failed to connect to Cloudera Manager.\nError is: %s' % e)
+
+    if state == "absent":
+        remove_service(module, MANAGER)
+    else:
+        add_service(module, MANAGER, cm_host, database_password)
+
+
+# import module snippets
+from ansible.module_utils.basic import *
+
+### invoke the module
+main()
