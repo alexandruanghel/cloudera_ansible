@@ -27,3 +27,14 @@
       register: my_hosts
 
     - debug: var=my_hosts
+
+    - name: Add Management Services API request
+      local_action:
+        module: cloudera_mgmt
+        cm_host: localhost
+        admin_password: admin
+        database_password: temp
+        state: present
+      register: my_mgmt
+
+    - debug: var=my_mgmt
