@@ -1,0 +1,295 @@
+#!/usr/bin/python
+# This file is part of Ansible
+#
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+# This is a DOCUMENTATION stub specific to this module, it extends
+# a documentation fragment located in ansible.utils.module_docs_fragments
+import socket, sys, time, ConfigParser, csv, pprint, urllib2
+from subprocess import Popen, PIPE, STDOUT
+from math import log as ln
+from cm_api.api_client import ApiResource
+from cm_api.api_client import ApiException
+from cm_api.endpoints.services import ApiService
+from cm_api.endpoints.services import ApiServiceSetupInfo
+
+DOCUMENTATION = '''
+---
+module: cloudera_zookeeper
+short_description: add / remove / manage the Zookeeper Service
+description:
+     - Manage the Zookeeper service.
+version_added: "2.1"
+options:
+  cluster:
+    description:
+      - Name of the cluster
+    default: null
+  cm_host:
+    description:
+      - Hostname of the node running Cloudera Manager
+    default: localhost
+  admin_password:
+    description:
+      - Password of the admin account for the cluster
+    default: admin
+  zookeeper_hosts:
+    description:
+      - Comma separated hostnames where Zookeeper should reside
+    default: null
+  zookeeper_datalogdir:
+    description:
+      - Location of Zookeeper log data
+    default: /var/lib/zookeeper
+  zookeeper_datadir:
+    description:
+      - Location of Zookeeper data
+    default: /var/lib/zookeeper
+  zookeeper_connections:
+    description:
+      - Maximum number of concurrent connections that a single IP can make
+    default: 1024
+  state:
+    description:
+      - Indicates whether the Zookeeper service should be installed (present) or removed (absent).
+      - If state is either starter or stopped it assumes present but besides checking that the service is installed, it will also execute the specified action.
+    choices:
+      - present
+      - absent
+      - started
+      - stopped
+    default: started
+author: Alexandru Anghel
+'''
+
+EXAMPLES = '''
+- name: Add the Zookeeper Service to the Cloudera cluster
+  gather_facts: False
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Add Zookeeper Service API request
+      local_action:
+        module: cloudera_zookeeper
+        cluster: my-test-cluster
+        cm_host: localhost
+        admin_password: admin
+        zookeeper_hosts: localhost
+        zookeeper_datalogdir: /hadoop/zookeeper
+        zookeeper_datadir: /hadoop/zookeeper
+        zookeeper_connections: 2048
+        state: started
+      register: my_zk
+
+    - debug: var=my_zk
+'''
+
+
+def find_cluster(module, api, name):
+    try:
+        cluster = api.get_cluster(name)
+        if not cluster:
+            return None
+
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get the cluster.\nError is: %s' % e)
+
+    return cluster
+
+
+def find_service(module, cluster, service_type):
+    service = None
+    try:
+        cluster_services = cluster.get_all_services()
+        for cluster_service in cluster_services:
+            if cluster_service.type == service_type:
+                service = cluster_service
+                break
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get the service.\nError is %s' % e)
+
+    return service
+
+
+def start_service(module, cluster, name):
+    try:
+        service = cluster.get_service(name)
+        if not service:
+            return "NOT_FOUND"
+        if service.serviceState != "STARTED":
+            service.start().wait()
+            time.sleep(1)
+            service = cluster.get_service(name)
+        return service.serviceState
+    except Exception as e:
+        module.fail_json(msg='Failed to start the service.\nError is: %s' % e)
+
+
+def stop_service(module, cluster, name):
+    try:
+        service = cluster.get_service(name)
+        if not service:
+            return "NOT_FOUND"
+        if service.serviceState != "STOPPED":
+            service.stop().wait()
+            time.sleep(1)
+            service = cluster.get_service(name)
+        return service.serviceState
+    except Exception as e:
+        module.fail_json(msg='Failed to start the service.\nError is: %s' % e)
+
+
+def add_service(module, cluster, service_type, zookeeper_hosts, zookeeper_datalogdir, zookeeper_datadir, zookeeper_connections):
+    changed = False
+
+    zookeeper_service_config = {
+        'zookeeper_datadir_autocreate': 'true'
+    }
+
+    zookeeper_config = {
+        'dataLogDir': zookeeper_datalogdir,
+        'dataDir': zookeeper_datadir,
+        'maxClientCnxns': zookeeper_connections
+    }
+
+    service = find_service(module, cluster, service_type)
+    if not service:
+        try:
+            service = cluster.create_service("ZOOKEEPER", service_type)
+            service.update_config(zookeeper_service_config)
+
+            zookeeper_hosts_split = sorted(zookeeper_hosts.split(','), key=str.lower)
+
+            for serverId, host in enumerate(zookeeper_hosts_split):
+                role = service.create_role("ZOOKEEPER-" + str(serverId + 1), "SERVER", host)
+                zookeeper_config['serverId'] = serverId + 1
+                role.update_config(zookeeper_config)
+
+            time.sleep(5)
+            service.init_zookeeper()
+            time.sleep(5)
+
+            remaining_wait_time = 60
+            service = cluster.get_service(service.name)
+            while remaining_wait_time > 0:
+                if service.serviceState != "NA":
+                    break
+                remaining_wait_time -= 5
+                time.sleep(5)
+                service = cluster.get_service(service.name)
+            else:
+                module.fail_json(msg='Failed to initialize the Zookeeper Service in less than 60 seconds.')
+
+            cmd = cluster.deploy_client_config()
+            if not cmd.wait(600).success:
+                module.fail_json(msg='Failed to deploy client configs in less than 10 minutes.')
+
+            changed = True
+        except Exception as e:
+            module.fail_json(msg='Failed to add the Zookeeper Service.\nError is: %s' % e)
+
+    result = dict(changed=changed, service=service.name, state=service.serviceState, hosts=sorted(zookeeper_hosts.split(','), key=str.lower))
+    return result
+
+
+def remove_service(module, cluster, service_type):
+    changed = False
+
+    service = find_service(module, cluster, service_type)
+    if service:
+        try:
+            service_state = stop_service(module, cluster, service.name)
+            if not service_state:
+                raise Exception("Service could not be stopped. Aborting...")
+            cluster.delete_service(service.name)
+
+            time.sleep(5)
+            changed = True
+        except Exception as e:
+            module.fail_json(msg='Failed to remove the Zookeeper Service.\nError is: %s' % e)
+
+    result = dict(changed=changed)
+    return result
+
+
+def main():
+    argument_spec = dict(
+        cluster=dict(type='str'),
+        cm_host=dict(type='str', default='localhost'),
+        admin_password=dict(type='str', default='admin'),
+        zookeeper_hosts=dict(type='str'),
+        zookeeper_datalogdir=dict(type='str', default='/var/lib/zookeeper'),
+        zookeeper_datadir=dict(type='str', default='/var/lib/zookeeper'),
+        zookeeper_connections=dict(type='str', default='1024'),
+        state=dict(default='started', choices=['present', 'absent', 'started', 'stopped'])
+    )
+
+    module = AnsibleModule(
+        argument_spec=argument_spec
+    )
+
+    cluster_name = module.params.get('cluster')
+    cm_host = module.params.get('cm_host')
+    admin_password = module.params.get('admin_password')
+    zookeeper_hosts = module.params.get('zookeeper_hosts')
+    zookeeper_datalogdir = module.params.get('zookeeper_datadir')
+    zookeeper_datadir = module.params.get('zookeeper_datadir')
+    zookeeper_connections = module.params.get('zookeeper_connections')
+    state = module.params.get('state')
+
+    service_type = "ZOOKEEPER"
+
+    if not cluster_name:
+        module.fail_json(msg='The cluster name is required for this module')
+
+    cfg = ConfigParser.SafeConfigParser()
+
+    try:
+        API = ApiResource(cm_host, username="admin", password=admin_password)
+    except ApiException as e:
+        module.fail_json(msg='Failed to connect to Cloudera Manager.\nError is: %s' % e)
+
+    cluster = find_cluster(module, API, cluster_name)
+    if not cluster:
+        module.fail_json(msg='Cluster %s does not exist.' % cluster_name)
+
+    if state == "absent":
+        result = remove_service(module, cluster, service_type)
+    else:
+        result = add_service(module, cluster, service_type, zookeeper_hosts, zookeeper_datalogdir, zookeeper_datadir, zookeeper_connections)
+        if state == "started" and result['state'] != "STARTED":
+            service_state = start_service(module, cluster, result['service'])
+            if service_state != "STARTED":
+                module.fail_json(msg='Failed to start the service.\nService state is: %s' % service_state)
+            result['changed'] = True
+            result['state'] = service_state
+
+        if state == "stopped" and result['state'] != "STOPPED":
+            service_state = stop_service(module, cluster, result['service'])
+            if service_state != "STOPPED":
+                module.fail_json(msg='Failed to stop the service.\nService state is: %s' % service_state)
+            result['changed'] = True
+            result['state'] = service_state
+
+    module.exit_json(**result)
+
+# import module snippets
+from ansible.module_utils.basic import *
+
+### invoke the module
+main()

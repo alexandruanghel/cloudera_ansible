@@ -50,3 +50,18 @@
       register: my_parcel
 
     - debug: var=my_parcel
+
+    - name: Add Zookeeper Service API request
+      local_action:
+        module: cloudera_zookeeper
+        cluster: hadoop_poc
+        cm_host: localhost
+        admin_password: admin
+        zookeeper_hosts: master-01.localnet
+        zookeeper_datalogdir: /hadoop/zookeeper
+        zookeeper_datadir: /hadoop/zookeeper
+        zookeeper_connections: 2048
+        state: started
+      register: my_zk
+
+    - debug: var=my_zk
