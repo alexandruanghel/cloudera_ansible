@@ -1,0 +1,356 @@
+#!/usr/bin/python
+# This file is part of Ansible
+#
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+# This is a DOCUMENTATION stub specific to this module, it extends
+# a documentation fragment located in ansible.utils.module_docs_fragments
+import socket, sys, time, ConfigParser, csv, pprint, urllib2
+from subprocess import Popen, PIPE, STDOUT
+from math import log as ln
+from cm_api.api_client import ApiResource
+from cm_api.api_client import ApiException
+from cm_api.endpoints.services import ApiService
+from cm_api.endpoints.services import ApiServiceSetupInfo
+
+DOCUMENTATION = '''
+---
+module: cloudera_hdfs
+short_description: add / remove / manage the HDFS Service
+description:
+     - Manage the HDFS service.
+version_added: "2.1"
+options:
+  cluster:
+    description:
+      - Name of the cluster
+    default: null
+  cm_host:
+    description:
+      - Hostname of the node running Cloudera Manager
+    default: localhost
+  admin_password:
+    description:
+      - Password of the admin account for the cluster
+    default: admin
+  namenode_hosts:
+    description:
+      - Comma separated hostnames where NameNode service should reside. Usually there would be 1 NameNode or maximum 2 for HA.
+    default: null
+  namenode_dir:
+    description:
+      - Location of NameNode data
+    default: /hadoop/hdfs/namenode
+  secondary_namenode_host:
+    description:
+      - Hostname of the host where the Secondary NameNode service should reside.
+    default: null
+  secondary_namenode_dir:
+    description:
+      - Location of Secondary NameNode data
+    default: /hadoop/hdfs/namesecondary
+  datanode_hosts:
+    description:
+      - Comma separated hostnames where DataNode service should reside.
+    default: null
+  datanode_dirs:
+    description:
+      - Comma separated folders where HDFS data should be stored.
+    default: /hadoop/hdfs/data
+  client_hosts:
+    description:
+      - Comma separated hostnames where HDFS client libraries service should reside.
+    default: null
+  hdfs_failed_volumes_tolerated:
+    description:
+      - The number of volumes that are allowed to fail before a datanode stops offering service.
+    default: 0
+  hdfs_dfs_replication:
+    description:
+      - Default block replication.
+    default: 3
+  state:
+    description:
+      - Indicates whether the HDFS service should be installed (present) or removed (absent).
+      - If state is either starter or stopped it assumes present but besides checking that the service is installed, it will also execute the specified action.
+    choices:
+      - present
+      - absent
+      - started
+      - stopped
+    default: started
+  wait_timeout:
+    description:
+      - How long to wait for HDFS format, in minutes
+    default: 30
+author: Alexandru Anghel
+'''
+
+EXAMPLES = '''
+- name: Add the HDFS Service to the Cloudera cluster
+  gather_facts: False
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Add HDFS Service API request
+      local_action:
+        module: cloudera_hdfs
+        cluster: my-test-cluster
+        cm_host: localhost
+        admin_password: admin
+        namenode_hosts: master-01.localnet
+        namenode_dir: /hadoop/hdfs/name
+        secondary_namenode_host: master-01.localnet
+        secondary_namenode_dir: /hadoop/hdfs/namesecondary
+        datanode_hosts: slave-01.localnet
+        datanode_dirs: /hadoop/hdfs/data
+        client_hosts: master-01.localnet,slave-01.localnet
+        hdfs_dfs_replication: 1
+        state: started
+      register: my_hdfs
+
+    - debug: var=my_hdfs
+'''
+
+
+def find_cluster(module, api, name):
+    try:
+        cluster = api.get_cluster(name)
+        if not cluster:
+            return None
+        return cluster
+
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get the cluster.\nError is: %s' % e)
+
+
+def find_service(module, cluster, service_type):
+    service = None
+    try:
+        cluster_services = cluster.get_all_services()
+        for cluster_service in cluster_services:
+            if cluster_service.type == service_type:
+                service = cluster_service
+                break
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get the service.\nError is %s' % e)
+
+    return service
+
+
+def start_service(module, cluster, name):
+    try:
+        service = cluster.get_service(name)
+        if not service:
+            return "NOT_FOUND"
+        if service.serviceState != "STARTED":
+            service.start().wait()
+            time.sleep(1)
+            service = cluster.get_service(name)
+        return service.serviceState
+    except Exception as e:
+        module.fail_json(msg='Failed to start the service.\nError is: %s' % e)
+
+
+def stop_service(module, cluster, name):
+    try:
+        service = cluster.get_service(name)
+        if not service:
+            return "NOT_FOUND"
+        if service.serviceState != "STOPPED":
+            service.stop().wait()
+            time.sleep(1)
+            service = cluster.get_service(name)
+        return service.serviceState
+    except Exception as e:
+        module.fail_json(msg='Failed to start the service.\nError is: %s' % e)
+
+
+def add_service(module, cluster, service_type, wait_timeout, namenode_hosts, namenode_dir, secondary_namenode_host, secondary_namenode_dir, datanode_hosts, datanode_dirs, client_hosts, hdfs_failed_volumes_tolerated, hdfs_dfs_replication):
+    changed = False
+
+    hdfs_service_config = {
+        'dfs_replication': hdfs_dfs_replication
+    }
+
+    namenode_config = {
+        'dfs_name_dir_list': namenode_dir
+    }
+
+    secondary_namenode_config = {
+        'fs_checkpoint_dir_list': secondary_namenode_dir
+    }
+
+    datanode_config = {
+        'dfs_data_dir_list': datanode_dirs,
+        'dfs_datanode_failed_volumes_tolerated': hdfs_failed_volumes_tolerated
+    }
+
+    client_config = {
+        'dfs_client_use_trash': 'true'
+    }
+
+    service = find_service(module, cluster, service_type)
+    if not service:
+        try:
+            service = cluster.create_service("HDFS", service_type)
+            service.update_config(hdfs_service_config)
+
+            namenode_role_group = service.get_role_config_group("HDFS-NAMENODE-BASE")
+            namenode_role_group.update_config(namenode_config)
+            namenode_hosts_split = sorted(namenode_hosts.split(','), key=str.lower)
+            for serverId, host in enumerate(namenode_hosts_split):
+                service.create_role("HDFS-nn-" + str(serverId + 1), "NAMENODE", host)
+            time.sleep(1)
+
+            secondary_namenode_role_group = service.get_role_config_group("HDFS-SECONDARYNAMENODE-BASE")
+            secondary_namenode_role_group.update_config(secondary_namenode_config)
+            service.create_role("HDFS-snn", "SECONDARYNAMENODE", secondary_namenode_host)
+            time.sleep(1)
+
+            datanode_role_group = service.get_role_config_group("HDFS-DATANODE-BASE")
+            datanode_role_group.update_config(datanode_config)
+            datanode_hosts_split = sorted(datanode_hosts.split(','), key=str.lower)
+            for serverId, host in enumerate(datanode_hosts_split):
+                service.create_role("HDFS-dn-" + str(serverId + 1), "DATANODE", host)
+            time.sleep(1)
+
+            client_role_group = service.get_role_config_group("HDFS-GATEWAY-BASE")
+            client_role_group.update_config(client_config)
+            client_hosts_split = sorted(client_hosts.split(','), key=str.lower)
+            for serverId, host in enumerate(client_hosts_split):
+                service.create_role("HDFS-gw-" + str(serverId + 1), "GATEWAY", host)
+            time.sleep(1)
+
+            time.sleep(5)
+            cmd = service.format_hdfs(service.get_roles_by_type('NAMENODE')[0].name)
+            time.sleep(1)
+
+            if not cmd[0].wait(wait_timeout * 60).success:
+                module.fail_json(msg='Failed to format the HDFS filesystem or the timeout of %s minutes was reached.' % wait_timeout)
+
+            cmd = cluster.deploy_client_config()
+            if not cmd.wait(600).success:
+                module.fail_json(msg='Failed to deploy client configs in less than 10 minutes.')
+
+            changed = True
+        except Exception as e:
+            module.fail_json(msg='Failed to add the HDFS Service.\nError is: %s' % e)
+
+    result = dict(changed=changed, service=service.name, state=service.serviceState, namenode_hosts=sorted(namenode_hosts.split(','), key=str.lower), datanode_hosts=sorted(datanode_hosts.split(','), key=str.lower))
+    return result
+
+
+def remove_service(module, cluster, service_type):
+    changed = False
+
+    service = find_service(module, cluster, service_type)
+    if service:
+        try:
+            service_state = stop_service(module, cluster, service.name)
+            if not service_state:
+                raise Exception("Service could not be stopped. Aborting...")
+            cluster.delete_service(service.name)
+
+            time.sleep(5)
+            changed = True
+        except Exception as e:
+            module.fail_json(msg='Failed to remove the HDFS Service.\nError is: %s' % e)
+
+    result = dict(changed=changed)
+    return result
+
+
+def main():
+    argument_spec = dict(
+        cluster=dict(type='str'),
+        cm_host=dict(type='str', default='localhost'),
+        admin_password=dict(type='str', default='admin'),
+        namenode_hosts=dict(type='str'),
+        namenode_dir=dict(type='str', default='/hadoop/hdfs/namenode'),
+        secondary_namenode_host=dict(type='str'),
+        secondary_namenode_dir=dict(type='str', default='/hadoop/hdfs/namesecondary'),
+        datanode_hosts=dict(type='str'),
+        datanode_dirs=dict(type='str', default='/hadoop/hdfs/data'),
+        client_hosts=dict(type='str'),
+        hdfs_failed_volumes_tolerated=dict(type='int', default=0),
+        hdfs_dfs_replication=dict(type='int', default=3),
+        state=dict(default='started', choices=['present', 'absent', 'started', 'stopped']),
+        wait_timeout=dict(default=30)
+    )
+
+    module = AnsibleModule(
+        argument_spec=argument_spec
+    )
+
+    cluster_name = module.params.get('cluster')
+    cm_host = module.params.get('cm_host')
+    admin_password = module.params.get('admin_password')
+    namenode_hosts = module.params.get('namenode_hosts')
+    namenode_dir = module.params.get('namenode_dir')
+    secondary_namenode_host = module.params.get('secondary_namenode_host')
+    secondary_namenode_dir = module.params.get('secondary_namenode_dir')
+    datanode_hosts = module.params.get('datanode_hosts')
+    datanode_dirs = module.params.get('datanode_dirs')
+    client_hosts = module.params.get('client_hosts')
+    hdfs_failed_volumes_tolerated = module.params.get('hdfs_failed_volumes_tolerated')
+    hdfs_dfs_replication = module.params.get('hdfs_dfs_replication')
+    state = module.params.get('state')
+    wait_timeout = int(module.params.get('wait_timeout'))
+
+    service_type = "HDFS"
+
+    if not cluster_name:
+        module.fail_json(msg='The cluster name is required for this module')
+
+    cfg = ConfigParser.SafeConfigParser()
+
+    try:
+        API = ApiResource(cm_host, username="admin", password=admin_password)
+    except ApiException as e:
+        module.fail_json(msg='Failed to connect to Cloudera Manager.\nError is: %s' % e)
+
+    cluster = find_cluster(module, API, cluster_name)
+    if not cluster:
+        module.fail_json(msg='Cluster %s does not exist.' % cluster_name)
+
+    if state == "absent":
+        result = remove_service(module, cluster, service_type)
+    else:
+        result = add_service(module, cluster, service_type, wait_timeout, namenode_hosts, namenode_dir, secondary_namenode_host, secondary_namenode_dir, datanode_hosts, datanode_dirs, client_hosts, hdfs_failed_volumes_tolerated, hdfs_dfs_replication)
+        if state == "started" and result['state'] != "STARTED":
+            service_state = start_service(module, cluster, result['service'])
+            if service_state != "STARTED":
+                module.fail_json(msg='Failed to start the service.\nService state is: %s' % service_state)
+            result['changed'] = True
+            result['state'] = service_state
+
+        if state == "stopped" and result['state'] != "STOPPED":
+            service_state = stop_service(module, cluster, result['service'])
+            if service_state != "STOPPED":
+                module.fail_json(msg='Failed to stop the service.\nService state is: %s' % service_state)
+            result['changed'] = True
+            result['state'] = service_state
+
+    module.exit_json(**result)
+
+# import module snippets
+from ansible.module_utils.basic import *
+
+### invoke the module
+main()

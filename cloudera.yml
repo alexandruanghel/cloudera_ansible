@@ -65,3 +65,22 @@
       register: my_zk
 
     - debug: var=my_zk
+
+    - name: Add HDFS Service API request
+      local_action:
+        module: cloudera_hdfs
+        cluster: hadoop_poc
+        cm_host: localhost
+        admin_password: admin
+        namenode_hosts: master-01.localnet
+        namenode_dir: /hadoop/hdfs/name
+        secondary_namenode_host: master-01.localnet
+        secondary_namenode_dir: /hadoop/hdfs/namesecondary
+        datanode_hosts: slave-01.localnet
+        datanode_dirs: /hadoop/hdfs/data
+        client_hosts: master-01.localnet,slave-01.localnet
+        hdfs_dfs_replication: 1
+        state: started
+      register: my_hdfs
+
+    - debug: var=my_hdfs
