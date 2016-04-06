@@ -38,3 +38,15 @@
       register: my_mgmt
 
     - debug: var=my_mgmt
+
+    - name: Add Parcel API request
+      local_action:
+        module: cloudera_parcel
+        cluster: hadoop_poc
+        cm_host: localhost
+        admin_password: admin
+        parcel_version: latest
+        state: present
+      register: my_parcel
+
+    - debug: var=my_parcel

@@ -1,0 +1,326 @@
+#!/usr/bin/python
+# This file is part of Ansible
+#
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+# This is a DOCUMENTATION stub specific to this module, it extends
+# a documentation fragment located in ansible.utils.module_docs_fragments
+import socket, sys, time, ConfigParser, csv, pprint, urllib2
+from subprocess import Popen, PIPE, STDOUT
+from math import log as ln
+from cm_api.api_client import ApiResource
+from cm_api.api_client import ApiException
+from cm_api.endpoints.services import ApiService
+from cm_api.endpoints.services import ApiServiceSetupInfo
+
+DOCUMENTATION = '''
+---
+module: cloudera_parcel
+short_description: add / remove a Cloudera Parcel
+description:
+     - Manage a Cloudera Parcel.
+version_added: "2.1"
+options:
+  cluster:
+    description:
+      - Name of the cluster
+    default: null
+  cm_host:
+    description:
+      - Hostname of the node running Cloudera Manager
+    default: localhost
+  admin_password:
+    description:
+      - Password of the admin account for the cluster
+    default: admin
+  parcel_version:
+    description:
+      - Version of the Cloudera Parcel
+    default: latest
+  state:
+    description:
+      - Indicates whether the Cloudera Parcel should be installed or removed
+    choices:
+      - present
+      - absent
+    default: present
+  wait_timeout:
+    description:
+      - How long should it wait for parcel download, in minutes
+    default: 30
+author: Alexandru Anghel
+'''
+
+EXAMPLES = '''
+- name: Add the CDH Parcel to the Cloudera cluster
+  gather_facts: False
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Add Parcel API request
+      local_action:
+        module: cloudera_parcel
+        cluster: my-test-cluster
+        cm_host: localhost
+        admin_password: admin
+        parcel_version: latest
+        state: present
+      register: my_parcel
+
+    - debug: var=my_parcel
+'''
+
+
+def find_cluster(module, api, name):
+    try:
+        cluster = api.get_cluster(name)
+        if not cluster:
+            return None
+
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get the cluster.\nError is: %s' % e)
+
+    return cluster
+
+
+def find_parcel(module, cluster, version, product='CDH'):
+    parcel = None
+    latest_version = 0
+
+    try:
+        cluster_parcels = cluster.get_all_parcels()
+        for cluster_parcel in cluster_parcels:
+            print cluster_parcel.product, cluster_parcel.version
+            print latest_version
+            if cluster_parcel.product == product:
+                if version != 'latest' and cluster_parcel.version == version:
+                    parcel = cluster_parcel
+                if version == 'latest' and latest_version < cluster_parcel.version:
+                    parcel = cluster_parcel
+                    latest_version = cluster_parcel.version
+
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get the parcel.\nError is %s' % e)
+
+    return parcel
+
+
+def add_parcel(module, cluster, parcel, wait_timeout):
+    changed = False
+    remaining_wait_time = wait_timeout
+
+    if parcel.stage != "ACTIVATED":
+
+        try:
+            parcel.start_download()
+
+            while remaining_wait_time > 0:
+                parcel_status = cluster.get_parcel(parcel.product, parcel.version)
+                if parcel_status.stage == "DOWNLOADED":
+                    break
+                if parcel_status.state.errors:
+                    raise Exception(str(parcel_status.state.errors))
+                remaining_wait_time -= 1
+                time.sleep(60)
+            if remaining_wait_time == 0:
+                raise Exception("Parcel was not downloaded in time. Aborting...")
+        except Exception, e:
+            module.fail_json(msg='Failed to download parcel.\nError is %s' % e)
+
+        try:
+            parcel.start_distribution()
+
+            while remaining_wait_time > 0:
+                parcel_status = cluster.get_parcel(parcel.product, parcel.version)
+                if parcel_status.stage == "DISTRIBUTED":
+                    break
+                if parcel_status.state.errors:
+                    raise Exception(str(parcel_status.state.errors))
+                remaining_wait_time -= 1
+                time.sleep(60)
+            if remaining_wait_time == 0:
+                raise Exception("Parcel was not distributed in time. Aborting...")
+        except Exception, e:
+            module.fail_json(msg='Failed to distribute parcel.\nError is %s' % e)
+
+        try:
+            parcel.activate()
+
+            while remaining_wait_time > 0:
+                parcel_status = cluster.get_parcel(parcel.product, parcel.version)
+                if parcel_status.stage == "ACTIVATED":
+                    break
+                if parcel_status.state.errors:
+                    raise Exception(str(parcel_status.state.errors))
+                remaining_wait_time -= 1
+                time.sleep(60)
+            if remaining_wait_time == 0:
+                raise Exception("Parcel was not activated in time. Aborting...")
+
+            changed = True
+        except Exception, e:
+            module.fail_json(msg='Failed to activate parcel.\nError is %s' % e)
+
+        parcel = cluster.get_parcel(parcel.product, parcel.version)
+
+    result = dict(changed=changed, product=parcel.product, version=parcel.version, stage=parcel.stage)
+    module.exit_json(**result)
+
+
+def remove_parcel(module, cluster, parcel, wait_timeout):
+    changed = False
+    remaining_wait_time = wait_timeout
+
+    if parcel.stage == "ACTIVATED":
+
+        try:
+            parcel.deactivate()
+            while remaining_wait_time > 0:
+                parcel_status = cluster.get_parcel(parcel.product, parcel.version)
+                if parcel_status.stage == "DISTRIBUTED":
+                    break
+                if parcel_status.state.errors:
+                    raise Exception(str(parcel_status.state.errors))
+                remaining_wait_time -= 1
+                time.sleep(60)
+            if remaining_wait_time == 0:
+                raise Exception("Parcel was not de-activated in time. Aborting...")
+            changed = True
+        except Exception, e:
+            module.fail_json(msg='Failed to de-activate parcel.\nError is %s' % e)
+
+    parcel = cluster.get_parcel(parcel.product, parcel.version)
+    if parcel.stage == "DISTRIBUTED":
+        try:
+            parcel.start_removal_of_distribution()
+            while remaining_wait_time > 0:
+                parcel_status = cluster.get_parcel(parcel.product, parcel.version)
+                if parcel_status.stage == "DOWNLOADED":
+                    break
+                if parcel_status.state.errors:
+                    raise Exception(str(parcel_status.state.errors))
+                remaining_wait_time -= 1
+                time.sleep(60)
+            if remaining_wait_time == 0:
+                raise Exception("Parcel was not removed in time. Aborting...")
+            changed = True
+        except Exception, e:
+            module.fail_json(msg='Failed to removed parcel.\nError is %s' % e)
+
+    parcel = cluster.get_parcel(parcel.product, parcel.version)
+    if parcel.stage == "DOWNLOADED":
+        try:
+            parcel.remove_download()
+            while remaining_wait_time > 0:
+                parcel_status = cluster.get_parcel(parcel.product, parcel.version)
+                if parcel_status.stage != "DOWNLOADED":
+                    break
+                if parcel_status.state.errors:
+                    raise Exception(str(parcel_status.state.errors))
+                remaining_wait_time -= 1
+                time.sleep(60)
+            if remaining_wait_time == 0:
+                raise Exception("Parcel was not removed in time. Aborting...")
+
+            changed = True
+        except Exception, e:
+            module.fail_json(msg='Failed to removed parcel.\nError is %s' % e)
+
+    parcel = cluster.get_parcel(parcel.product, parcel.version)
+
+    result = dict(changed=changed, product=parcel.product, version=parcel.version, stage=parcel.stage)
+    module.exit_json(**result)
+
+
+
+
+
+
+
+    try:
+        parcel.deactivate()
+        parcel.start_removal_of_distribution()
+        parcel.remove_download()
+        while remaining_wait_time > 0:
+            parcel_status = cluster.get_parcel(parcel.product, parcel.version)
+            if parcel_status.stage == "DOWNLOADED":
+                break
+            if parcel_status.state.errors:
+                raise Exception(str(parcel_status.state.errors))
+
+            remaining_wait_time -= 1
+            time.sleep(60)
+        if remaining_wait_time == 0:
+            raise Exception("Parcel was not downloaded in time. Aborting...")
+    except Exception, e:
+        module.fail_json(msg='Failed to download parcel.\nError is %s' % e)
+
+    result = dict(changed=changed)
+    module.exit_json(**result)
+
+
+def main():
+    argument_spec = dict(
+        cluster=dict(type='str'),
+        cm_host=dict(type='str', default='localhost'),
+        admin_password=dict(type='str', default='admin'),
+        parcel_version=dict(type='str', default='latest'),
+        state=dict(default='present', choices=['present', 'absent']),
+        wait_timeout=dict(default=30)
+    )
+
+    module = AnsibleModule(
+        argument_spec=argument_spec
+    )
+
+    cluster_name = module.params.get('cluster')
+    cm_host = module.params.get('cm_host')
+    admin_password = module.params.get('admin_password')
+    parcel_version = module.params.get('parcel_version')
+    state = module.params.get('state')
+    wait_timeout = int(module.params.get('wait_timeout'))
+
+    if not cluster_name:
+        module.fail_json(msg='The cluster name is required for this module')
+
+    cfg = ConfigParser.SafeConfigParser()
+
+    try:
+        API = ApiResource(cm_host, username="admin", password=admin_password)
+    except ApiException as e:
+        module.fail_json(msg='Failed to connect to Cloudera Manager.\nError is: %s' % e)
+
+    cluster = find_cluster(module, API, cluster_name)
+    if not cluster:
+        module.fail_json(msg='Cluster %s does not exist.' % cluster_name)
+
+    parcel = find_parcel(module, cluster, parcel_version)
+    if not parcel:
+        module.fail_json(msg='Could not find Parcel with %s version.' % parcel_version)
+
+    if state == "absent":
+        remove_parcel(module, cluster, parcel, wait_timeout)
+    else:
+        add_parcel(module, cluster, parcel, wait_timeout)
+
+
+# import module snippets
+from ansible.module_utils.basic import *
+
+### invoke the module
+main()
