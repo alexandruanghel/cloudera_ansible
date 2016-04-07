@@ -84,3 +84,19 @@
       register: my_hdfs
 
     - debug: var=my_hdfs
+
+    - name: Add YARN Service API request
+      local_action:
+        module: cloudera_yarn
+        cluster: hadoop_poc
+        cm_host: localhost
+        admin_password: admin
+        resourcemanager_hosts: master-01.localnet
+        history_host: master-01.localnet
+        nodemanager_hosts: slave-01.localnet
+        nodemanager_dir: /hadoop/yarn/nm
+        client_hosts: master-01.localnet,slave-01.localnet
+        state: started
+      register: my_yarn
+
+    - debug: var=my_yarn
