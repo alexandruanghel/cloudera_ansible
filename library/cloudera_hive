@@ -1,0 +1,347 @@
+#!/usr/bin/python
+# This file is part of Ansible
+#
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+# This is a DOCUMENTATION stub specific to this module, it extends
+# a documentation fragment located in ansible.utils.module_docs_fragments
+import socket, sys, time, ConfigParser, csv, pprint, urllib2
+from subprocess import Popen, PIPE, STDOUT
+from math import log as ln
+from cm_api.api_client import ApiResource
+from cm_api.api_client import ApiException
+from cm_api.endpoints.services import ApiService
+from cm_api.endpoints.services import ApiServiceSetupInfo
+
+DOCUMENTATION = '''
+---
+module: cloudera_hive
+short_description: add / remove / manage the Hive Service
+description:
+     - Manage the Hive service.
+version_added: "2.1"
+options:
+  cluster:
+    description:
+      - Name of the cluster
+    default: null
+  cm_host:
+    description:
+      - Hostname of the node running Cloudera Manager
+    default: localhost
+  admin_password:
+    description:
+      - Password of the admin account for the cluster
+    default: admin
+  metastore_host:
+    description:
+      - Hostname of the node where the Hive Metastore should reside
+    default: null
+  metastore_database_host:
+    description:
+      - Hostname of the node where the Hive Metastore's database should reside
+    default: null
+  metastore_database_type:
+    description:
+      - The database type that should be used for Hive Metastore
+    default: mysql
+  metastore_database_port:
+    description:
+      - The port used by the Hive Metastore database
+    default: 3306
+  metastore_database_name:
+    description:
+      - The name of the Hive Metastore database
+    default: metastore
+  metastore_database_user:
+    description:
+      - The username used to connect to the Hive Metastore database
+    default: metastore
+  metastore_database_password:
+    description:
+      - The password for the user used to connect to the Hive Metastore database
+    default: null
+  hiveserver2_host:
+    description:
+      - Hostname of the node where HiveServer2 should reside
+    default: null
+  webhcat_host:
+    description:
+      - Hostname of the node where WebHCat should reside
+    default: null
+  client_hosts:
+    description:
+      - Comma separated hostnames of the nodes where Hive client libraries service should reside
+    default: null
+  state:
+    description:
+      - Indicates whether the Hive service should be installed (present) or removed (absent).
+      - If state is either starter or stopped it assumes present but besides checking that the service is installed, it will also execute the specified action.
+    choices:
+      - present
+      - absent
+      - started
+      - stopped
+    default: started
+author: Alexandru Anghel
+'''
+
+EXAMPLES = '''
+- name: Add the Hive Service to the Cloudera cluster
+  gather_facts: False
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Add Hive Service API request
+      local_action:
+        module: cloudera_hive
+        cluster: my-test-cluster
+        cm_host: localhost
+        admin_password: admin
+        metastore_host: master-01.localnet
+        metastore_database_host: master-01.localnet
+        metastore_database_type: mysql
+        metastore_database_port: 3306
+        metastore_database_name: metastore
+        metastore_database_user: metastore
+        metastore_database_password: temp
+        hiveserver2_host: master-01.localnet
+        webhcat_host: master-01.localnet
+        client_hosts: master-01.localnet,slave-01.localnet
+        state: started
+      register: my_hive
+
+    - debug: var=my_hive
+'''
+
+
+def find_cluster(module, api, name):
+    try:
+        cluster = api.get_cluster(name)
+        if not cluster:
+            return None
+        return cluster
+
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get the cluster.\nError is: %s' % e)
+
+
+def find_service(module, cluster, service_type):
+    service = None
+    try:
+        cluster_services = cluster.get_all_services()
+        for cluster_service in cluster_services:
+            if cluster_service.type == service_type:
+                service = cluster_service
+                break
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get the service.\nError is %s' % e)
+
+    return service
+
+
+def start_service(module, cluster, name):
+    try:
+        service = cluster.get_service(name)
+        if not service:
+            return "NOT_FOUND"
+        if service.serviceState != "STARTED":
+            service.start().wait()
+            time.sleep(1)
+            service = cluster.get_service(name)
+        return service.serviceState
+    except Exception as e:
+        module.fail_json(msg='Failed to start the service.\nError is: %s' % e)
+
+
+def stop_service(module, cluster, name):
+    try:
+        service = cluster.get_service(name)
+        if not service:
+            return "NOT_FOUND"
+        if service.serviceState != "STOPPED":
+            service.stop().wait()
+            time.sleep(1)
+            service = cluster.get_service(name)
+        return service.serviceState
+    except Exception as e:
+        module.fail_json(msg='Failed to start the service.\nError is: %s' % e)
+
+
+def add_service(module, cluster, service_type, metastore_host, metastore_database_host, metastore_database_type, metastore_database_port, metastore_database_name, metastore_database_user, metastore_database_password, hiveserver2_host, webhcat_host, client_hosts):
+    changed = False
+    zookeeper_service = find_service(module, cluster, "ZOOKEEPER")
+    yarn_service = find_service(module, cluster, "YARN")
+
+    hive_service_config = {
+        'hive_metastore_database_host': metastore_database_host,
+        'hive_metastore_database_type': metastore_database_type,
+        'hive_metastore_database_port': metastore_database_port,
+        'hive_metastore_database_name': metastore_database_name,
+        'hive_metastore_database_user': metastore_database_user,
+        'hive_metastore_database_password': metastore_database_password,
+        'zookeeper_service': zookeeper_service.name,
+        'mapreduce_yarn_service': yarn_service.name
+    }
+
+    service = find_service(module, cluster, service_type)
+    if not service:
+        try:
+            service = cluster.create_service("HIVE", service_type)
+            service.update_config(hive_service_config)
+
+            #metastore_role_group = service.get_role_config_group("HIVE-HIVEMETASTORE-BASE")
+            #metastore_role_group.update_config(metastore_config)
+            service.create_role("HIVE-metastore", "HIVEMETASTORE", metastore_host)
+            time.sleep(1)
+
+            #hiveserver2_role_group = service.get_role_config_group("HIVE-HIVESERVER2-BASE")
+            #hiveserver2_role_group.update_config(hiveserver2_config)
+            service.create_role("HIVE-hs2", "HIVESERVER2", hiveserver2_host)
+            time.sleep(1)
+
+            #webhcat_role_group = service.get_role_config_group("HIVE-WEBHCAT-BASE")
+            #webhcat_role_group.update_config(webhcat_config)
+            service.create_role("HIVE-webhcat", "WEBHCAT", webhcat_host)
+            time.sleep(1)
+
+            #client_role_group = service.get_role_config_group("HIVE-GATEWAY-BASE")
+            #client_role_group.update_config(hive_client_config)
+            client_hosts_split = sorted(client_hosts.split(','), key=str.lower)
+            for serverId, host in enumerate(client_hosts_split):
+                service.create_role("HIVE-gw-" + str(serverId + 1), "GATEWAY", host)
+            time.sleep(1)
+
+            cmd = cluster.deploy_client_config()
+            if not cmd.wait(300).success:
+                module.fail_json(msg='Failed to deploy client configs in less than 5 minutes.')
+
+            cmd = service.create_hive_metastore_tables()
+            if not cmd.wait(60).success:
+                module.fail_json(msg='Failed to create the Hive Metastore database tables in less than 60 seconds.')
+
+            cmd = service.create_hive_warehouse()
+            if not cmd.wait(60).success:
+                module.fail_json(msg='Failed to create the Hive warehouse folder in less than 60 seconds.')
+
+            changed = True
+        except Exception as e:
+            module.fail_json(msg='Failed to add the Hive Service.\nError is: %s' % e)
+
+    result = dict(changed=changed, service=service.name, state=service.serviceState, metastore_host=metastore_host, hiveserver2_host=hiveserver2_host, webhcat_host=webhcat_host)
+    return result
+
+
+def remove_service(module, cluster, service_type):
+    changed = False
+
+    service = find_service(module, cluster, service_type)
+    if service:
+        try:
+            service_state = stop_service(module, cluster, service.name)
+            if not service_state:
+                raise Exception("Service could not be stopped. Aborting...")
+            cluster.delete_service(service.name)
+
+            time.sleep(5)
+            changed = True
+        except Exception as e:
+            module.fail_json(msg='Failed to remove the Hive Service.\nError is: %s' % e)
+
+    result = dict(changed=changed)
+    return result
+
+
+def main():
+    argument_spec = dict(
+        cluster=dict(type='str'),
+        cm_host=dict(type='str', default='localhost'),
+        admin_password=dict(type='str', default='admin'),
+        metastore_host=dict(type='str'),
+        metastore_database_host=dict(type='str'),
+        metastore_database_type=dict(type='str', default='mysql'),
+        metastore_database_port=dict(type='str', default='3306'),
+        metastore_database_name=dict(type='str', default='metastore'),
+        metastore_database_user=dict(type='str', default='metastore'),
+        metastore_database_password=dict(type='str'),
+        hiveserver2_host=dict(type='str'),
+        webhcat_host=dict(type='str'),
+        client_hosts=dict(type='str'),
+        state=dict(default='started', choices=['present', 'absent', 'started', 'stopped'])
+    )
+
+    module = AnsibleModule(
+        argument_spec=argument_spec
+    )
+
+    cluster_name = module.params.get('cluster')
+    cm_host = module.params.get('cm_host')
+    admin_password = module.params.get('admin_password')
+    metastore_host = module.params.get('metastore_host')
+    metastore_database_host = module.params.get('metastore_database_host')
+    metastore_database_type = module.params.get('metastore_database_type')
+    metastore_database_port = module.params.get('metastore_database_port')
+    metastore_database_name = module.params.get('metastore_database_name')
+    metastore_database_user = module.params.get('metastore_database_user')
+    metastore_database_password = module.params.get('metastore_database_password')
+    hiveserver2_host = module.params.get('hiveserver2_host')
+    webhcat_host = module.params.get('webhcat_host')
+    client_hosts = module.params.get('client_hosts')
+    state = module.params.get('state')
+
+    service_type = "HIVE"
+
+    if not cluster_name:
+        module.fail_json(msg='The cluster name is required for this module')
+
+    cfg = ConfigParser.SafeConfigParser()
+
+    try:
+        API = ApiResource(cm_host, username="admin", password=admin_password)
+    except ApiException as e:
+        module.fail_json(msg='Failed to connect to Cloudera Manager.\nError is: %s' % e)
+
+    cluster = find_cluster(module, API, cluster_name)
+    if not cluster:
+        module.fail_json(msg='Cluster %s does not exist.' % cluster_name)
+
+    if state == "absent":
+        result = remove_service(module, cluster, service_type)
+    else:
+        result = add_service(module, cluster, service_type, metastore_host, metastore_database_host, metastore_database_type, metastore_database_port, metastore_database_name, metastore_database_user, metastore_database_password, hiveserver2_host, webhcat_host, client_hosts)
+        if state == "started" and result['state'] != "STARTED":
+            service_state = start_service(module, cluster, result['service'])
+            if service_state != "STARTED":
+                module.fail_json(msg='Failed to start the service.\nService state is: %s' % service_state)
+            result['changed'] = True
+            result['state'] = service_state
+
+        if state == "stopped" and result['state'] != "STOPPED":
+            service_state = stop_service(module, cluster, result['service'])
+            if service_state != "STOPPED":
+                module.fail_json(msg='Failed to stop the service.\nService state is: %s' % service_state)
+            result['changed'] = True
+            result['state'] = service_state
+
+    module.exit_json(**result)
+
+# import module snippets
+from ansible.module_utils.basic import *
+
+### invoke the module
+main()

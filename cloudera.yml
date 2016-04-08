@@ -31,7 +31,7 @@
     - name: Add Management Services API request
       local_action:
         module: cloudera_mgmt
-        cm_host: localhost
+        cm_host: master-01.localnet
         admin_password: admin
         database_password: temp
         state: present
@@ -100,3 +100,24 @@
       register: my_yarn
 
     - debug: var=my_yarn
+
+    - name: Add Hive Service API request
+      local_action:
+        module: cloudera_hive
+        cluster: hadoop_poc
+        cm_host: localhost
+        admin_password: admin
+        metastore_host: master-01.localnet
+        metastore_database_host: master-01.localnet
+        metastore_database_type: mysql
+        metastore_database_port: 3306
+        metastore_database_name: metastore
+        metastore_database_user: metastore
+        metastore_database_password: temp
+        hiveserver2_host: master-01.localnet
+        webhcat_host: master-01.localnet
+        client_hosts: master-01.localnet,slave-01.localnet
+        state: started
+      register: my_hive
+
+    - debug: var=my_hive
