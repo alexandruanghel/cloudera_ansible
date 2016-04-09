@@ -121,3 +121,18 @@
       register: my_hive
 
     - debug: var=my_hive
+
+    - name: Add HBase Service API request
+      local_action:
+        module: cloudera_hbase
+        cluster: hadoop_poc
+        cm_host: localhost
+        admin_password: admin
+        master_hosts: master-01.localnet
+        regionserver_hosts: slave-01.localnet
+        thrift_hosts: master-01.localnet
+        client_hosts: master-01.localnet,slave-01.localnet
+        state: started
+      register: my_hbase
+
+    - debug: var=my_hbase
