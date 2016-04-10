@@ -136,3 +136,17 @@
       register: my_hbase
 
     - debug: var=my_hbase
+
+    - name: Add Impala Service API request
+      local_action:
+        module: cloudera_impala
+        cluster: hadoop_poc
+        cm_host: localhost
+        admin_password: admin
+        statestore_host: master-01.localnet
+        catalogserver_host: master-01.localnet
+        impalad_hosts: slave-01.localnet
+        state: started
+      register: my_impala
+
+    - debug: var=my_impala
