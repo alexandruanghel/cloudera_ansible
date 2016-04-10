@@ -195,10 +195,6 @@ def add_service(module, cluster, service_type, zookeeper_hosts, zookeeper_datalo
             else:
                 module.fail_json(msg='Failed to initialize the Zookeeper Service in less than 60 seconds.')
 
-            cmd = cluster.deploy_client_config()
-            if not cmd.wait(600).success:
-                module.fail_json(msg='Failed to deploy client configs in less than 10 minutes.')
-
             changed = True
         except Exception as e:
             module.fail_json(msg='Failed to add the Zookeeper Service.\nError is: %s' % e)
