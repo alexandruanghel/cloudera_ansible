@@ -167,3 +167,15 @@
       register: my_oozie
 
     - debug: var=my_oozie
+
+    - name: Add Flume Service API request
+      local_action:
+        module: cloudera_flume
+        cluster: hadoop_poc
+        cm_host: localhost
+        admin_password: admin
+        flume_agent_hosts: master-01.localnet
+        state: started
+      register: my_flume
+
+    - debug: var=my_flume
