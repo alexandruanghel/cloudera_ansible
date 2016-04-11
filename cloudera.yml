@@ -150,3 +150,20 @@
       register: my_impala
 
     - debug: var=my_impala
+
+    - name: Add Oozie Service API request
+      local_action:
+        module: cloudera_oozie
+        cluster: hadoop_poc
+        cm_host: localhost
+        admin_password: admin
+        oozie_host: master-01.localnet
+        oozie_database_host: master-01.localnet
+        oozie_database_type: mysql
+        oozie_database_name: oozie
+        oozie_database_user: oozie
+        oozie_database_password: temp
+        state: started
+      register: my_oozie
+
+    - debug: var=my_oozie
