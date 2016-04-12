@@ -179,3 +179,16 @@
       register: my_flume
 
     - debug: var=my_flume
+
+    - name: Add Solr Service API request
+      local_action:
+        module: cloudera_solr
+        cluster: hadoop_poc
+        cm_host: localhost
+        admin_password: admin
+        solr_server_hosts: master-01.localnet
+        client_hosts: master-01.localnet,slave-01.localnet
+        state: started
+      register: my_solr
+
+    - debug: var=my_solr
