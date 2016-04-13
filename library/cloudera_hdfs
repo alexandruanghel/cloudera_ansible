@@ -46,7 +46,7 @@ options:
     default: admin
   namenode_hosts:
     description:
-      - Comma separated hostnames where NameNode service should reside. Usually there would be 1 NameNode or maximum 2 for HA.
+      - Comma separated hostnames of the nodes where NameNode service should reside. Usually there would be 1 NameNode or maximum 2 for HA.
     default: null
   namenode_dir:
     description:
@@ -54,7 +54,7 @@ options:
     default: /hadoop/hdfs/namenode
   secondary_namenode_host:
     description:
-      - Hostname of the host where the Secondary NameNode service should reside.
+      - Hostname of the node where the Secondary NameNode service should reside.
     default: null
   secondary_namenode_dir:
     description:
@@ -62,7 +62,7 @@ options:
     default: /hadoop/hdfs/namesecondary
   datanode_hosts:
     description:
-      - Comma separated hostnames where DataNode service should reside.
+      - Comma separated hostnames of the nodes where DataNode service should reside.
     default: null
   datanode_dirs:
     description:
@@ -70,7 +70,7 @@ options:
     default: /hadoop/hdfs/data
   client_hosts:
     description:
-      - Comma separated hostnames where HDFS client libraries service should reside.
+      - Comma separated hostnames of the nodes where HDFS client libraries service should reside.
     default: null
   hdfs_failed_volumes_tolerated:
     description:
@@ -245,8 +245,8 @@ def add_service(module, cluster, service_type, wait_timeout, namenode_hosts, nam
                 module.fail_json(msg='Failed to format the HDFS filesystem or the timeout of %s minutes was reached.' % wait_timeout)
 
             cmd = cluster.deploy_client_config()
-            if not cmd.wait(600).success:
-                module.fail_json(msg='Failed to deploy client configs in less than 10 minutes.')
+            if not cmd.wait(300).success:
+                module.fail_json(msg='Failed to deploy client configs or the timeout of 5 minutes was reached.')
 
             changed = True
         except Exception as e:

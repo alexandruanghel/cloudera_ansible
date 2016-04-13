@@ -46,15 +46,15 @@ options:
     default: admin
   resourcemanager_hosts:
     description:
-      - Comma separated hostnames where ResourceManager service should reside. Usually there would be 1 ResourceManager or maximum 2 for HA.
+      - Comma separated hostnames of the nodes where ResourceManager service should reside. Usually there would be 1 ResourceManager or maximum 2 for HA
     default: null
   history_host:
     description:
-      - Hostname of the host where the Job History Server should reside.
+      - Hostname of the node where the Job History Server should reside
     default: null
   nodemanager_hosts:
     description:
-      - Comma separated hostnames where NodeManager service should reside.
+      - Comma separated hostnames of the nodes where NodeManager service should reside
     default: null
   nodemanager_dir:
     description:
@@ -62,12 +62,12 @@ options:
     default: /hadoop/yarn/nm
   client_hosts:
     description:
-      - Comma separated hostnames where YARN client libraries service should reside.
+      - Comma separated hostnames of the nodes where YARN client libraries service should reside
     default: null
   state:
     description:
-      - Indicates whether the YARN service should be installed (present) or removed (absent).
-      - If state is either starter or stopped it assumes present but besides checking that the service is installed, it will also execute the specified action.
+      - Indicates whether the YARN service should be installed (present) or removed (absent)
+      - If state is either starter or stopped it assumes present but besides checking that the service is installed, it will also execute the specified action
     choices:
       - present
       - absent
@@ -204,7 +204,7 @@ def add_service(module, cluster, service_type, resourcemanager_hosts, history_ho
 
             cmd = cluster.deploy_client_config()
             if not cmd.wait(300).success:
-                module.fail_json(msg='Failed to deploy client configs in less than 5 minutes.')
+                module.fail_json(msg='Failed to deploy client configs or the timeout of 5 minutes was reached.')
 
             cmd = service.create_yarn_job_history_dir()
             if not cmd.wait(60).success:
@@ -212,7 +212,6 @@ def add_service(module, cluster, service_type, resourcemanager_hosts, history_ho
 
             cmd = service.create_yarn_node_manager_remote_app_log_dir()
             if not cmd.wait(60).success:
-                module.fail_json(msg='Failed to create the NodeManager remote app log dir in less than 60 seconds.')
                 module.fail_json(msg='Failed to create the NodeManager remote app log dir in less than 60 seconds.')
 
             changed = True

@@ -46,7 +46,7 @@ options:
     default: admin
   zookeeper_hosts:
     description:
-      - Comma separated hostnames where Zookeeper should reside
+      - Comma separated hostnames of the nodes where Zookeeper should reside
     default: null
   zookeeper_datalogdir:
     description:
@@ -101,13 +101,12 @@ def find_cluster(module, api, name):
         cluster = api.get_cluster(name)
         if not cluster:
             return None
+        return cluster
 
     except ApiException as e:
         if e.code == 404:
             return None
         module.fail_json(msg='Failed to get the cluster.\nError is: %s' % e)
-
-    return cluster
 
 
 def find_service(module, cluster, service_type):

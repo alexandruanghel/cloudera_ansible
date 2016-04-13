@@ -229,7 +229,7 @@ def add_service(module, cluster, service_type, metastore_host, metastore_databas
 
             cmd = cluster.deploy_client_config()
             if not cmd.wait(300).success:
-                module.fail_json(msg='Failed to deploy client configs in less than 5 minutes.')
+                module.fail_json(msg='Failed to deploy client configs or the timeout of 5 minutes was reached.')
 
             cmd = service.create_hive_metastore_tables()
             if not cmd.wait(60).success:
