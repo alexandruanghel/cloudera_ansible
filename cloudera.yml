@@ -192,3 +192,15 @@
       register: my_solr
 
     - debug: var=my_solr
+
+    - name: Add Sqoop 2 Service API request
+      local_action:
+        module: cloudera_sqoop2
+        cluster: hadoop_poc
+        cm_host: localhost
+        admin_password: admin
+        sqoop2_server_host: master-01.localnet
+        state: started
+      register: my_sqoop2
+
+    - debug: var=my_sqoop2
