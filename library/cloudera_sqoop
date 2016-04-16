@@ -1,0 +1,202 @@
+#!/usr/bin/python
+# This file is part of Ansible
+#
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+# This is a DOCUMENTATION stub specific to this module, it extends
+# a documentation fragment located in ansible.utils.module_docs_fragments
+import socket, sys, time, ConfigParser, csv, pprint, urllib2
+from subprocess import Popen, PIPE, STDOUT
+from math import log as ln
+from cm_api.api_client import ApiResource
+from cm_api.api_client import ApiException
+from cm_api.endpoints.services import ApiService
+from cm_api.endpoints.services import ApiServiceSetupInfo
+
+DOCUMENTATION = '''
+---
+module: cloudera_sqoop
+short_description: add / remove / manage the Sqoop Service
+description:
+     - Manage the Sqoop service.
+version_added: "2.1"
+options:
+  cluster:
+    description:
+      - Name of the cluster
+    default: null
+  cm_host:
+    description:
+      - Hostname of the node running Cloudera Manager
+    default: localhost
+  admin_password:
+    description:
+      - Password of the admin account for the cluster
+    default: admin
+  client_hosts:
+    description:
+      - Comma separated hostnames of the nodes where Sqoop client libraries service should reside
+    default: null
+  state:
+    description:
+      - Indicates whether the Sqoop service should be installed (present) or removed (absent).
+    choices:
+      - present
+      - absent
+    default: present
+author: Alexandru Anghel
+'''
+
+EXAMPLES = '''
+- name: Add the Sqoop Service to the Cloudera cluster
+  gather_facts: False
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Add Sqoop Service API request
+      local_action:
+        module: cloudera_sqoop
+        cluster: my-test-cluster
+        cm_host: localhost
+        admin_password: admin
+        client_hosts: master-01.localnet,slave-01.localnet
+        state: present
+      register: my_sqoop
+
+    - debug: var=my_sqoop
+'''
+
+
+def find_cluster(module, api, name):
+    try:
+        cluster = api.get_cluster(name)
+        if not cluster:
+            return None
+        return cluster
+
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get the cluster.\nError is: %s' % e)
+
+
+def find_service(module, cluster, service_type):
+    service = None
+    try:
+        cluster_services = cluster.get_all_services()
+        for cluster_service in cluster_services:
+            if cluster_service.type == service_type:
+                service = cluster_service
+                break
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get the service.\nError is %s' % e)
+
+    return service
+
+
+def add_service(module, cluster, service_type, client_hosts):
+    changed = False
+    sqoop_service_config = {}
+
+    service = find_service(module, cluster, service_type)
+    if not service:
+        try:
+            service = cluster.create_service("SQOOP1", service_type)
+            service.update_config(sqoop_service_config)
+
+            #client_role_group = service.get_role_config_group("SQOOP_CLIENT-GATEWAY-BASE")
+            #client_role_group.update_config(sqoop_client_config)
+            client_hosts_split = sorted(client_hosts.split(','), key=str.lower)
+            for serverId, host in enumerate(client_hosts_split):
+                service.create_role("SQOOP-gw-" + str(serverId + 1), "GATEWAY", host)
+            time.sleep(1)
+
+            cmd = service.deploy_client_config()
+            if not cmd.wait(300).success:
+                module.fail_json(msg='Failed to deploy client configs or the timeout of 5 minutes was reached.')
+
+            changed = True
+        except Exception as e:
+            module.fail_json(msg='Failed to add the Sqoop Service.\nError is: %s' % e)
+
+    result = dict(changed=changed, service=service.name, state=service.serviceState, client_hosts=sorted(client_hosts.split(','), key=str.lower))
+    return result
+
+
+def remove_service(module, cluster, service_type):
+    changed = False
+
+    service = find_service(module, cluster, service_type)
+    if service:
+        try:
+            cluster.delete_service(service.name)
+
+            time.sleep(5)
+            changed = True
+        except Exception as e:
+            module.fail_json(msg='Failed to remove the Sqoop Service.\nError is: %s' % e)
+
+    result = dict(changed=changed)
+    return result
+
+
+def main():
+    argument_spec = dict(
+        cluster=dict(type='str'),
+        cm_host=dict(type='str', default='localhost'),
+        admin_password=dict(type='str', default='admin'),
+        client_hosts=dict(type='str'),
+        state=dict(default='present', choices=['present', 'absent'])
+    )
+
+    module = AnsibleModule(
+        argument_spec=argument_spec
+    )
+
+    cluster_name = module.params.get('cluster')
+    cm_host = module.params.get('cm_host')
+    admin_password = module.params.get('admin_password')
+    client_hosts = module.params.get('client_hosts')
+    state = module.params.get('state')
+
+    service_type = "SQOOP_CLIENT"
+
+    if not cluster_name:
+        module.fail_json(msg='The cluster name is required for this module')
+
+    cfg = ConfigParser.SafeConfigParser()
+
+    try:
+        API = ApiResource(cm_host, username="admin", password=admin_password)
+    except ApiException as e:
+        module.fail_json(msg='Failed to connect to Cloudera Manager.\nError is: %s' % e)
+
+    cluster = find_cluster(module, API, cluster_name)
+    if not cluster:
+        module.fail_json(msg='Cluster %s does not exist.' % cluster_name)
+
+    if state == "absent":
+        result = remove_service(module, cluster, service_type)
+    else:
+        result = add_service(module, cluster, service_type, client_hosts)
+
+    module.exit_json(**result)
+
+# import module snippets
+from ansible.module_utils.basic import *
+
+### invoke the module
+main()
