@@ -216,3 +216,15 @@
       register: my_sqoop2
 
     - debug: var=my_sqoop2
+
+    - name: Add Hue Service API request
+      local_action:
+        module: cloudera_hue
+        cluster: hadoop_poc
+        cm_host: localhost
+        admin_password: admin
+        hue_server_host: master-01.localnet
+        state: started
+      register: my_hue
+
+    - debug: var=my_hue
