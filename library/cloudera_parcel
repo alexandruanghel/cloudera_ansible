@@ -251,33 +251,6 @@ def remove_parcel(module, cluster, parcel, wait_timeout):
     module.exit_json(**result)
 
 
-
-
-
-
-
-    try:
-        parcel.deactivate()
-        parcel.start_removal_of_distribution()
-        parcel.remove_download()
-        while remaining_wait_time > 0:
-            parcel_status = cluster.get_parcel(parcel.product, parcel.version)
-            if parcel_status.stage == "DOWNLOADED":
-                break
-            if parcel_status.state.errors:
-                raise Exception(str(parcel_status.state.errors))
-
-            remaining_wait_time -= 1
-            time.sleep(60)
-        if remaining_wait_time == 0:
-            raise Exception("Parcel was not downloaded in time. Aborting...")
-    except Exception, e:
-        module.fail_json(msg='Failed to download parcel.\nError is %s' % e)
-
-    result = dict(changed=changed)
-    module.exit_json(**result)
-
-
 def main():
     argument_spec = dict(
         cluster=dict(type='str'),
