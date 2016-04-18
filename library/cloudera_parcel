@@ -44,6 +44,10 @@ options:
     description:
       - Password of the admin account for the cluster
     default: admin
+  parcel_name:
+    description:
+      - Name of the Cloudera Parcel
+    default: CDH
   parcel_version:
     description:
       - Version of the Cloudera Parcel
@@ -74,6 +78,7 @@ EXAMPLES = '''
         cluster: my-test-cluster
         cm_host: localhost
         admin_password: admin
+        parcel_name: CDH
         parcel_version: latest
         state: present
       register: my_parcel
@@ -87,16 +92,15 @@ def find_cluster(module, api, name):
         cluster = api.get_cluster(name)
         if not cluster:
             return None
+        return cluster
 
     except ApiException as e:
         if e.code == 404:
             return None
         module.fail_json(msg='Failed to get the cluster.\nError is: %s' % e)
 
-    return cluster
 
-
-def find_parcel(module, cluster, version, product='CDH'):
+def find_parcel(module, cluster, name, version):
     parcel = None
     latest_version = 0
 
@@ -105,7 +109,7 @@ def find_parcel(module, cluster, version, product='CDH'):
         for cluster_parcel in cluster_parcels:
             print cluster_parcel.product, cluster_parcel.version
             print latest_version
-            if cluster_parcel.product == product:
+            if cluster_parcel.product == name:
                 if version != 'latest' and cluster_parcel.version == version:
                     parcel = cluster_parcel
                 if version == 'latest' and latest_version < cluster_parcel.version:
@@ -136,7 +140,7 @@ def add_parcel(module, cluster, parcel, wait_timeout):
                 if parcel_status.state.errors:
                     raise Exception(str(parcel_status.state.errors))
                 remaining_wait_time -= 1
-                time.sleep(60)
+                time.sleep(30)
             if remaining_wait_time == 0:
                 raise Exception("Parcel was not downloaded in time. Aborting...")
         except Exception, e:
@@ -152,7 +156,7 @@ def add_parcel(module, cluster, parcel, wait_timeout):
                 if parcel_status.state.errors:
                     raise Exception(str(parcel_status.state.errors))
                 remaining_wait_time -= 1
-                time.sleep(60)
+                time.sleep(30)
             if remaining_wait_time == 0:
                 raise Exception("Parcel was not distributed in time. Aborting...")
         except Exception, e:
@@ -168,7 +172,7 @@ def add_parcel(module, cluster, parcel, wait_timeout):
                 if parcel_status.state.errors:
                     raise Exception(str(parcel_status.state.errors))
                 remaining_wait_time -= 1
-                time.sleep(60)
+                time.sleep(30)
             if remaining_wait_time == 0:
                 raise Exception("Parcel was not activated in time. Aborting...")
 
@@ -197,7 +201,7 @@ def remove_parcel(module, cluster, parcel, wait_timeout):
                 if parcel_status.state.errors:
                     raise Exception(str(parcel_status.state.errors))
                 remaining_wait_time -= 1
-                time.sleep(60)
+                time.sleep(30)
             if remaining_wait_time == 0:
                 raise Exception("Parcel was not de-activated in time. Aborting...")
             changed = True
@@ -215,7 +219,7 @@ def remove_parcel(module, cluster, parcel, wait_timeout):
                 if parcel_status.state.errors:
                     raise Exception(str(parcel_status.state.errors))
                 remaining_wait_time -= 1
-                time.sleep(60)
+                time.sleep(30)
             if remaining_wait_time == 0:
                 raise Exception("Parcel was not removed in time. Aborting...")
             changed = True
@@ -233,7 +237,7 @@ def remove_parcel(module, cluster, parcel, wait_timeout):
                 if parcel_status.state.errors:
                     raise Exception(str(parcel_status.state.errors))
                 remaining_wait_time -= 1
-                time.sleep(60)
+                time.sleep(30)
             if remaining_wait_time == 0:
                 raise Exception("Parcel was not removed in time. Aborting...")
 
@@ -279,6 +283,7 @@ def main():
         cluster=dict(type='str'),
         cm_host=dict(type='str', default='localhost'),
         admin_password=dict(type='str', default='admin'),
+        parcel_name=dict(type='str', default='CDH'),
         parcel_version=dict(type='str', default='latest'),
         state=dict(default='present', choices=['present', 'absent']),
         wait_timeout=dict(default=30)
@@ -291,6 +296,7 @@ def main():
     cluster_name = module.params.get('cluster')
     cm_host = module.params.get('cm_host')
     admin_password = module.params.get('admin_password')
+    parcel_name = module.params.get('parcel_name')
     parcel_version = module.params.get('parcel_version')
     state = module.params.get('state')
     wait_timeout = int(module.params.get('wait_timeout'))
@@ -309,9 +315,9 @@ def main():
     if not cluster:
         module.fail_json(msg='Cluster %s does not exist.' % cluster_name)
 
-    parcel = find_parcel(module, cluster, parcel_version)
+    parcel = find_parcel(module, cluster, parcel_name, parcel_version)
     if not parcel:
-        module.fail_json(msg='Could not find Parcel with %s version.' % parcel_version)
+        module.fail_json(msg='Could not find parcel %s with %s version.' % (parcel_name, parcel_version))
 
     if state == "absent":
         remove_parcel(module, cluster, parcel, wait_timeout)
