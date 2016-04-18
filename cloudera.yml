@@ -228,3 +228,16 @@
       register: my_hue
 
     - debug: var=my_hue
+
+    - name: Add Spark Service API request
+      local_action:
+        module: cloudera_spark
+        cluster: hadoop_poc
+        cm_host: localhost
+        admin_password: admin
+        history_host: master-01.localnet
+        client_hosts: master-01.localnet,slave-01.localnet
+        state: started
+      register: my_spark
+
+    - debug: var=my_spark

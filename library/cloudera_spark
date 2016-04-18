@@ -1,0 +1,282 @@
+#!/usr/bin/python
+# This file is part of Ansible
+#
+# Ansible is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# Ansible is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
+
+# This is a DOCUMENTATION stub specific to this module, it extends
+# a documentation fragment located in ansible.utils.module_docs_fragments
+import socket, sys, time, ConfigParser, csv, pprint, urllib2
+from subprocess import Popen, PIPE, STDOUT
+from math import log as ln
+from cm_api.api_client import ApiResource
+from cm_api.api_client import ApiException
+from cm_api.endpoints.services import ApiService
+from cm_api.endpoints.services import ApiServiceSetupInfo
+
+DOCUMENTATION = '''
+---
+module: cloudera_spark
+short_description: add / remove / manage the Spark Service
+description:
+     - Manage the Spark service.
+version_added: "2.1"
+options:
+  cluster:
+    description:
+      - Name of the cluster
+    default: null
+  cm_host:
+    description:
+      - Hostname of the node running Cloudera Manager
+    default: localhost
+  admin_password:
+    description:
+      - Password of the admin account for the cluster
+    default: admin
+  history_host:
+    description:
+      - Hostname of the node where the Spark History Server should reside
+    default: null
+  client_hosts:
+    description:
+      - Comma separated hostnames of the nodes where Spark client libraries service should reside
+    default: null
+  state:
+    description:
+      - Indicates whether the Spark service should be installed (present) or removed (absent).
+      - If state is either starter or stopped it assumes present but besides checking that the service is installed, it will also execute the specified action.
+    choices:
+      - present
+      - absent
+      - started
+      - stopped
+    default: started
+author: Alexandru Anghel
+'''
+
+EXAMPLES = '''
+- name: Add the Spark Service to the Cloudera cluster
+  gather_facts: False
+  hosts: localhost
+  connection: local
+  tasks:
+    - name: Add Spark Service API request
+      local_action:
+        module: cloudera_spark
+        cluster: my-test-cluster
+        cm_host: localhost
+        admin_password: admin
+        history_host: master-01.localnet
+        client_hosts: master-01.localnet,slave-01.localnet
+        state: started
+      register: my_spark
+
+    - debug: var=my_spark
+'''
+
+
+def find_cluster(module, api, name):
+    try:
+        cluster = api.get_cluster(name)
+        if not cluster:
+            return None
+        return cluster
+
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get the cluster.\nError is: %s' % e)
+
+
+def find_service(module, cluster, service_type):
+    service = None
+    try:
+        cluster_services = cluster.get_all_services()
+        for cluster_service in cluster_services:
+            if cluster_service.type == service_type:
+                service = cluster_service
+                break
+    except ApiException as e:
+        if e.code == 404:
+            return None
+        module.fail_json(msg='Failed to get the service.\nError is %s' % e)
+
+    return service
+
+
+def start_service(module, cluster, name):
+    try:
+        service = cluster.get_service(name)
+        if not service:
+            return "NOT_FOUND"
+        if service.serviceState != "STARTED":
+            service.start().wait()
+            time.sleep(1)
+            service = cluster.get_service(name)
+        return service.serviceState
+    except Exception as e:
+        module.fail_json(msg='Failed to start the service.\nError is: %s' % e)
+
+
+def stop_service(module, cluster, name):
+    try:
+        service = cluster.get_service(name)
+        if not service:
+            return "NOT_FOUND"
+        if service.serviceState != "STOPPED":
+            service.stop().wait()
+            time.sleep(1)
+            service = cluster.get_service(name)
+        return service.serviceState
+    except Exception as e:
+        module.fail_json(msg='Failed to start the service.\nError is: %s' % e)
+
+
+def add_service(module, cluster, service_type, history_host, client_hosts):
+    changed = False
+    yarn_service = find_service(module, cluster, "YARN")
+
+    spark_service_config = {}
+    if yarn_service:
+        spark_service_config['yarn_service'] = yarn_service.name
+    else:
+        module.fail_json(msg='YARN Service is required. Cannot proceed until the YARN service is installed and running.')
+
+    service = find_service(module, cluster, service_type)
+    if not service:
+        try:
+            service = cluster.create_service("SPARK", service_type)
+            service.update_config(spark_service_config)
+
+            #history_role_group = service.get_role_config_group("SPARK-SPARK_YARN_HISTORY_SERVER-BASE")
+            #history_role_group.update_config(spark_histary_config)
+            service.create_role("SPARK-hs", "SPARK_YARN_HISTORY_SERVER", history_host)
+            time.sleep(1)
+
+            #client_role_group = service.get_role_config_group("SPARK-GATEWAY-BASE")
+            #client_role_group.update_config(spark_client_config)
+            client_hosts_split = sorted(client_hosts.split(','), key=str.lower)
+            for serverId, host in enumerate(client_hosts_split):
+                service.create_role("SPARK-gw-" + str(serverId + 1), "GATEWAY", host)
+            time.sleep(1)
+
+            cmd = service.deploy_client_config()
+            if not cmd.wait(300).success:
+                module.fail_json(msg='Failed to deploy client configs or the timeout of 5 minutes was reached.')
+
+            # Calling the API directly as the method wasn't available in cm_api
+            cmd = service._cmd('SparkUploadJarServiceCommand', api_version=11)
+            if not cmd.wait(300).success:
+                module.fail_json(msg='Failed to upload Spark JAR or the timeout of 5 minutes was reached.')
+
+            # Calling the API directly as the method wasn't available in cm_api
+            cmd = service._cmd('CreateSparkUserDirCommand', api_version=11)
+            if not cmd.wait(300).success:
+                module.fail_json(msg='Failed to create Spark User Dir or the timeout of 5 minutes was reached.')
+
+            # Calling the API directly as the method wasn't available in cm_api
+            cmd = service._cmd('CreateSparkHistoryDirCommand', api_version=11)
+            if not cmd.wait(300).success:
+                module.fail_json(msg='Failed to create Spark History Dir or the timeout of 5 minutes was reached.')
+
+            changed = True
+        except Exception as e:
+            module.fail_json(msg='Failed to add the Spark Service.\nError is: %s' % e)
+
+    result = dict(changed=changed, service=service.name, state=service.serviceState, history_host=history_host)
+    return result
+
+
+def remove_service(module, cluster, service_type):
+    changed = False
+
+    service = find_service(module, cluster, service_type)
+    if service:
+        try:
+            service_state = stop_service(module, cluster, service.name)
+            if not service_state:
+                raise Exception("Service could not be stopped. Aborting...")
+            cluster.delete_service(service.name)
+
+            time.sleep(5)
+            changed = True
+        except Exception as e:
+            module.fail_json(msg='Failed to remove the Spark Service.\nError is: %s' % e)
+
+    result = dict(changed=changed)
+    return result
+
+
+def main():
+    argument_spec = dict(
+        cluster=dict(type='str'),
+        cm_host=dict(type='str', default='localhost'),
+        admin_password=dict(type='str', default='admin'),
+        history_host=dict(type='str'),
+        client_hosts=dict(type='str'),
+        state=dict(default='started', choices=['present', 'absent', 'started', 'stopped'])
+    )
+
+    module = AnsibleModule(
+        argument_spec=argument_spec
+    )
+
+    cluster_name = module.params.get('cluster')
+    cm_host = module.params.get('cm_host')
+    admin_password = module.params.get('admin_password')
+    history_host = module.params.get('history_host')
+    client_hosts = module.params.get('client_hosts')
+    state = module.params.get('state')
+
+    service_type = "SPARK_ON_YARN"
+
+    if not cluster_name:
+        module.fail_json(msg='The cluster name is required for this module')
+
+    cfg = ConfigParser.SafeConfigParser()
+
+    try:
+        API = ApiResource(cm_host, username="admin", password=admin_password)
+    except ApiException as e:
+        module.fail_json(msg='Failed to connect to Cloudera Manager.\nError is: %s' % e)
+
+    cluster = find_cluster(module, API, cluster_name)
+    if not cluster:
+        module.fail_json(msg='Cluster %s does not exist.' % cluster_name)
+
+    if state == "absent":
+        result = remove_service(module, cluster, service_type)
+    else:
+        result = add_service(module, cluster, service_type, history_host, client_hosts)
+        if state == "started" and result['state'] != "STARTED":
+            service_state = start_service(module, cluster, result['service'])
+            if service_state != "STARTED":
+                module.fail_json(msg='Failed to start the service.\nService state is: %s' % service_state)
+            result['changed'] = True
+            result['state'] = service_state
+
+        if state == "stopped" and result['state'] != "STOPPED":
+            service_state = stop_service(module, cluster, result['service'])
+            if service_state != "STOPPED":
+                module.fail_json(msg='Failed to stop the service.\nService state is: %s' % service_state)
+            result['changed'] = True
+            result['state'] = service_state
+
+    module.exit_json(**result)
+
+# import module snippets
+from ansible.module_utils.basic import *
+
+### invoke the module
+main()
