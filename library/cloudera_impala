@@ -151,14 +151,23 @@ def stop_service(module, cluster, name):
 def add_service(module, cluster, service_type, statestore_host, catalogserver_host, impalad_hosts):
     changed = False
     hdfs_service = find_service(module, cluster, "HDFS")
-    hbase_service = find_service(module, cluster, "HBASE")
     hive_service = find_service(module, cluster, "HIVE")
+    hbase_service = find_service(module, cluster, "HBASE")
+    zookeeper_service = find_service(module, cluster, "ZOOKEEPER")
 
-    impala_service_config = {
-        'hdfs_service': hdfs_service.name,
-        'hbase_service': hbase_service.name,
-        'hive_service': hive_service.name
-    }
+    impala_service_config = {}
+    if hdfs_service:
+        impala_service_config['hdfs_service'] = hdfs_service.name
+    else:
+        module.fail_json(msg='HDFS Service is required. Cannot proceed until the HDFS service is installed and running.')
+    if hive_service:
+        impala_service_config['hive_service'] = hive_service.name
+    else:
+        module.fail_json(msg='Hive Service is required. Cannot proceed until the Hive service is installed and running.')
+    if hbase_service:
+        impala_service_config['hbase_service'] = hbase_service.name
+    if zookeeper_service:
+        impala_service_config['zookeeper_service'] = zookeeper_service.name
 
     service = find_service(module, cluster, service_type)
     if not service:

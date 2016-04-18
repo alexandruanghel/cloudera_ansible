@@ -160,11 +160,16 @@ def stop_service(module, cluster, name):
 
 def add_service(module, cluster, service_type, resourcemanager_hosts, history_host, nodemanager_hosts, nodemanager_dir, client_hosts):
     changed = False
+    zookeeper_service = find_service(module, cluster, "ZOOKEEPER")
     hdfs_service = find_service(module, cluster, "HDFS")
 
-    yarn_service_config = {
-        'hdfs_service': hdfs_service.name
-    }
+    yarn_service_config = {}
+    if zookeeper_service:
+        yarn_service_config['zookeeper_service'] = zookeeper_service.name
+    if hdfs_service:
+        yarn_service_config['hdfs_service'] = hdfs_service.name
+    else:
+        module.fail_json(msg='HDFS Service is required. Cannot proceed until the HDFS service is installed and running.')
 
     yarn_nodemanager_config = {
         'yarn_nodemanager_local_dirs': nodemanager_dir

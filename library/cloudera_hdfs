@@ -183,10 +183,13 @@ def stop_service(module, cluster, name):
 
 def add_service(module, cluster, service_type, wait_timeout, namenode_hosts, namenode_dir, secondary_namenode_host, secondary_namenode_dir, datanode_hosts, datanode_dirs, client_hosts, hdfs_failed_volumes_tolerated, hdfs_dfs_replication):
     changed = False
+    zookeeper_service = find_service(module, cluster, "ZOOKEEPER")
 
     hdfs_service_config = {
         'dfs_replication': hdfs_dfs_replication
     }
+    if zookeeper_service:
+        hdfs_service_config['zookeeper_service'] = zookeeper_service.name
 
     namenode_config = {
         'dfs_name_dir_list': namenode_dir

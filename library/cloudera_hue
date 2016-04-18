@@ -149,11 +149,21 @@ def add_service(module, cluster, service_type, hue_server_host):
     solr_service = find_service(module, cluster, "SOLR")
     zookeeper_service = find_service(module, cluster, "ZOOKEEPER")
 
-    hue_service_config = {
-        'hue_webhdfs': hdfs_service.name + "-nn-1",
-        'hive_service': hive_service.name,
-        'oozie_service': oozie_service.name
-    }
+    hue_service_config = {}
+    if hdfs_service:
+        hue_service_config['hue_webhdfs'] = hdfs_service.name + "-nn-1"
+    else:
+        module.fail_json(msg='HDFS Service is required. Cannot proceed until the HDFS service is installed and running.')
+
+    if hive_service:
+        hue_service_config['hive_service'] = hive_service.name
+    else:
+        module.fail_json(msg='Hive Service is required. Cannot proceed until the Hive service is installed and running.')
+
+    if oozie_service:
+        hue_service_config['oozie_service'] = oozie_service.name
+    else:
+        module.fail_json(msg='Oozie Service is required. Cannot proceed until the Oozie service is installed and running.')
 
     if hbase_service:
         hue_service_config['hbase_service'] = hbase_service.name

@@ -194,10 +194,14 @@ def add_service(module, cluster, service_type, metastore_host, metastore_databas
         'hive_metastore_database_port': metastore_database_port,
         'hive_metastore_database_name': metastore_database_name,
         'hive_metastore_database_user': metastore_database_user,
-        'hive_metastore_database_password': metastore_database_password,
-        'zookeeper_service': zookeeper_service.name,
-        'mapreduce_yarn_service': yarn_service.name
+        'hive_metastore_database_password': metastore_database_password
     }
+    if zookeeper_service:
+        hive_service_config['zookeeper_service'] = zookeeper_service.name
+    if yarn_service:
+        hive_service_config['mapreduce_yarn_service'] = yarn_service.name
+    else:
+        module.fail_json(msg='YARN Service is required. Cannot proceed until the YARN service is installed and running.')
 
     service = find_service(module, cluster, service_type)
     if not service:

@@ -166,10 +166,21 @@ def stop_service(module, cluster, name):
 def add_service(module, cluster, service_type, oozie_host, oozie_database_host, oozie_database_type, oozie_database_name, oozie_database_user, oozie_database_password):
     changed = False
     yarn_service = find_service(module, cluster, "YARN")
+    zookeeper_service = find_service(module, cluster, "ZOOKEEPER")
+    hive_service = find_service(module, cluster, "HIVE")
+    spark_service = find_service(module, cluster, "SPARK_ON_YARN")
 
-    oozie_service_config = {
-        'mapreduce_yarn_service': yarn_service.name
-    }
+    oozie_service_config = {}
+    if yarn_service:
+        oozie_service_config['mapreduce_yarn_service'] = yarn_service.name
+    else:
+        module.fail_json(msg='YARN Service is required. Cannot proceed until the YARN service is installed and running.')
+    if zookeeper_service:
+        oozie_service_config['zookeeper_service'] = zookeeper_service.name
+    if hive_service:
+        oozie_service_config['hive_service'] = hive_service.name
+    if spark_service:
+        oozie_service_config['spark_on_yarn_service'] = spark_service.name
 
     oozie_server_config = {
         'oozie_database_host': oozie_database_host,

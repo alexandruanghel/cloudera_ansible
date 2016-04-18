@@ -148,10 +148,15 @@ def add_service(module, cluster, service_type, solr_server_hosts, client_hosts):
     hdfs_service = find_service(module, cluster, "HDFS")
     zookeeper_service = find_service(module, cluster, "ZOOKEEPER")
 
-    solr_service_config = {
-        'hdfs_service': hdfs_service.name,
-        'zookeeper_service': zookeeper_service.name
-    }
+    solr_service_config = {}
+    if zookeeper_service:
+        solr_service_config['zookeeper_service'] = zookeeper_service.name
+    else:
+        module.fail_json(msg='Zookeeper Service is required. Cannot proceed until the Zookeeper service is installed and running.')
+    if hdfs_service:
+        solr_service_config['hdfs_service'] = hdfs_service.name
+    else:
+        module.fail_json(msg='HDFS Service is required. Cannot proceed until the HDFS service is installed and running.')
 
     service = find_service(module, cluster, service_type)
     if not service:
