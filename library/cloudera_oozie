@@ -201,7 +201,7 @@ def add_service(module, cluster, service_type, oozie_host, oozie_database_host, 
             service.create_role("OOZIE-server", "OOZIE_SERVER", oozie_host)
             time.sleep(1)
 
-            cmd = cluster.deploy_client_config()
+            cmd = service.deploy_client_config()
             if not cmd.wait(300).success:
                 module.fail_json(msg='Failed to deploy client configs or the timeout of 5 minutes was reached.')
 
